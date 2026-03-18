@@ -90,17 +90,37 @@ RESPOND HANYA DALAM FORMAT JSON BERIKUT (tanpa markdown, tanpa code block):
     "reasoning": "penjelasan singkat"
 }}"""
 
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.3,
-                max_output_tokens=1000,
-            )
-        )
+    # Coba beberapa model free Gemini (fallback jika quota habis)
+    free_models = [
+        'gemini-2.0-flash-lite',
+        'gemini-2.0-flash',
+        'gemini-1.5-flash',
+    ]
 
-        response_text = response.text.strip()
+    response_text = None
+    for model_name in free_models:
+        try:
+            logger.info(f"   Mencoba model: {model_name}")
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.3,
+                    max_output_tokens=1000,
+                )
+            )
+            response_text = response.text.strip()
+            logger.info(f"   ✅ Berhasil dengan model: {model_name}")
+            break
+        except Exception as model_err:
+            logger.warning(f"   ⚠️ Model {model_name} gagal: {model_err}")
+            continue
+
+    if response_text is None:
+        logger.error("❌ Semua model Gemini gagal. Gunakan fallback.")
+        return _fallback_signal(indicators)
+
+    try:
 
         # Bersihkan response dari markdown code blocks
         if response_text.startswith("```"):
