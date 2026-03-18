@@ -5,29 +5,18 @@ Menggunakan Google Gemini untuk analisis dan generate signal XAUUSD
 
 import json
 import logging
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
-
-
-def setup_gemini(api_key: str):
-    """Konfigurasi Gemini API"""
-    genai.configure(api_key=api_key)
 
 
 def generate_signal_with_gemini(indicators: dict, api_key: str) -> dict:
     """
     Gunakan Gemini AI untuk menganalisis indikator teknikal
     dan menghasilkan signal trading XAUUSD.
-    
-    Args:
-        indicators: dict berisi semua nilai indikator teknikal
-        api_key: Gemini API key
-        
-    Returns:
-        dict dengan signal, TP, SL, probabilitas, dll.
     """
-    setup_gemini(api_key)
+    client = genai.Client(api_key=api_key)
 
     prompt = f"""Kamu adalah seorang expert XAUUSD scalp trader profesional dengan pengalaman 15+ tahun.
 Analisis data teknikal berikut dan berikan signal trading yang akurat.
@@ -101,13 +90,13 @@ RESPOND HANYA DALAM FORMAT JSON BERIKUT (tanpa markdown, tanpa code block):
     for model_name in free_models:
         try:
             logger.info(f"   Mencoba model: {model_name}")
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
                     temperature=0.3,
                     max_output_tokens=1000,
-                )
+                ),
             )
             response_text = response.text.strip()
             logger.info(f"   ✅ Berhasil dengan model: {model_name}")
