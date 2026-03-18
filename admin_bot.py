@@ -141,26 +141,35 @@ class AdminBot:
         """Jalankan admin bot di background thread"""
         def _run():
             import asyncio
+
+            async def _start_polling():
+                self.app = (
+                    ApplicationBuilder()
+                    .token(self.bot_token)
+                    .post_init(self._post_init)
+                    .build()
+                )
+
+                # Register handlers
+                self.app.add_handler(CommandHandler("start", self.cmd_start))
+                self.app.add_handler(CommandHandler("signal", self.cmd_signal))
+                self.app.add_handler(CommandHandler("status", self.cmd_status))
+                self.app.add_handler(CommandHandler("help", self.cmd_help))
+
+                logger.info("🤖 Admin bot started! Kirim /signal di chat bot untuk trigger manual")
+                self._is_running = True
+
+                await self.app.initialize()
+                await self.app.start()
+                await self.app.updater.start_polling(drop_pending_updates=True)
+
+                # Keep running forever
+                stop_event = asyncio.Event()
+                await stop_event.wait()
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-
-            self.app = (
-                ApplicationBuilder()
-                .token(self.bot_token)
-                .post_init(self._post_init)
-                .build()
-            )
-
-            # Register handlers
-            self.app.add_handler(CommandHandler("start", self.cmd_start))
-            self.app.add_handler(CommandHandler("signal", self.cmd_signal))
-            self.app.add_handler(CommandHandler("status", self.cmd_status))
-            self.app.add_handler(CommandHandler("help", self.cmd_help))
-
-            logger.info("🤖 Admin bot started! Kirim /signal di chat bot untuk trigger manual")
-            self._is_running = True
-
-            loop.run_until_complete(self.app.run_polling(drop_pending_updates=True))
+            loop.run_until_complete(_start_polling())
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
