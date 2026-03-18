@@ -79,11 +79,10 @@ RESPOND HANYA DALAM FORMAT JSON BERIKUT (tanpa markdown, tanpa code block):
     "reasoning": "penjelasan singkat"
 }}"""
 
-    # Coba beberapa model free Gemini (fallback jika quota habis)
+    # Model free Gemini (google-genai SDK)
     free_models = [
         'gemini-2.0-flash-lite',
         'gemini-2.0-flash',
-        'gemini-1.5-flash',
     ]
 
     response_text = None

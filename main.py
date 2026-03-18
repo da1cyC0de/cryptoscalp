@@ -234,6 +234,10 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
 
+    # Hapus webhook lama & kill session lain agar tidak conflict
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("✅ Webhook cleared, siap polling...")
+
     # Set bot commands
     await bot.set_my_commands([
         BotCommand(command="signal", description="🚀 Generate & kirim signal sekarang"),
