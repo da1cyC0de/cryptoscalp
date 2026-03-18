@@ -94,6 +94,6 @@ def get_spread_estimate() -> float:
         ask = info.get('ask', 0)
         if bid > 0 and ask > 0:
             return round(ask - bid, 2)
-        return 0.30  # Default spread estimate
+        return 0.45  # Default spread estimate untuk XAUUSD
     except Exception:
-        return 0.30
+        return 0.45
