@@ -254,66 +254,48 @@ def generate_signal_with_gemini(indicators: dict, api_key: str) -> dict:
     logger.info(f"   BUY reasons: {', '.join(confluence['buy_reasons'])}")
     logger.info(f"   SELL reasons: {', '.join(confluence['sell_reasons'])}")
 
-    # Step 2: Tentukan signal berdasarkan confluence
-    min_confluence = 4  # Minimal 4 faktor harus sejalan
-
-    if buy_score >= min_confluence and buy_score > sell_score + 2:
+    # Step 2: Tentukan signal — SELALU BUY atau SELL, yang score lebih tinggi menang
+    if buy_score >= sell_score:
         signal_type = 'BUY'
-    elif sell_score >= min_confluence and sell_score > buy_score + 2:
-        signal_type = 'SELL'
     else:
-        # Confluence tidak cukup kuat — JANGAN TRADE
-        logger.info(f"⏸️ Confluence terlalu lemah ({buy_score} vs {sell_score}), skip signal")
-        signal_type = 'NEUTRAL'
+        signal_type = 'SELL'
 
-    # Step 2b: Duplicate signal prevention
+    logger.info(f"🎯 Signal: {signal_type} (BUY={buy_score} vs SELL={sell_score})")
+
+    # Step 2b: Duplicate signal prevention — skip kalau signal & harga sama persis
     global _last_signal
     price = indicators['price']
     price_diff = abs(price - _last_signal['price'])
     atr = indicators['atr']
 
-    if (signal_type != 'NEUTRAL'
-            and signal_type == _last_signal['type']
+    if (signal_type == _last_signal['type']
             and price_diff < atr * 0.3):
-        logger.info(f"⏭️ Skip duplicate signal: {signal_type} at similar price "
-                     f"(diff={price_diff:.2f}, threshold={atr * 0.3:.2f})")
-        signal_type = 'NEUTRAL'
+        # Tetap kirim tapi flip ke arah lawan kalau score cukup
+        if signal_type == 'BUY' and sell_score >= 3:
+            signal_type = 'SELL'
+            logger.info(f"🔄 Flip to SELL (avoid duplicate BUY at similar price)")
+        elif signal_type == 'SELL' and buy_score >= 3:
+            signal_type = 'BUY'
+            logger.info(f"🔄 Flip to BUY (avoid duplicate SELL at similar price)")
 
     # Update last signal tracker
-    if signal_type != 'NEUTRAL':
-        _last_signal = {'type': signal_type, 'price': price, 'time': datetime.now()}
+    _last_signal = {'type': signal_type, 'price': price, 'time': datetime.now()}
 
     # Step 3: Hitung levels
-    if signal_type != 'NEUTRAL':
-        levels = _calculate_smart_levels(indicators, signal_type)
-    else:
-        atr = indicators['atr']
-        price = indicators['price']
-        levels = {
-            'stop_loss': round(price - atr, 2),
-            'tp1': round(price + atr * 0.5, 2),
-            'tp2': round(price + atr, 2),
-            'tp3': round(price + atr * 1.5, 2),
-            'risk': round(atr, 2),
-        }
+    levels = _calculate_smart_levels(indicators, signal_type)
 
-    # Step 4: Hitung probability & strength (never 0% or 100%)
+    # Step 4: Hitung probability & strength (10-90% range)
     total = max(buy_score + sell_score, 1)
     raw_buy_pct = buy_score / total * 100
     raw_sell_pct = sell_score / total * 100
 
-    # Clamp between 10-90% — market selalu punya uncertainty
     prob_up = round(max(10, min(90, raw_buy_pct)), 2)
     prob_down = round(max(10, min(90, raw_sell_pct)), 2)
 
     if signal_type == 'BUY':
-        strength = round(min(90, raw_buy_pct), 0)
-    elif signal_type == 'SELL':
-        strength = round(min(90, raw_sell_pct), 0)
+        strength = round(max(30, min(90, raw_buy_pct)), 0)
     else:
-        prob_up = round(max(10, min(90, raw_buy_pct * 0.5 + 25)), 2)
-        prob_down = round(max(10, min(90, raw_sell_pct * 0.5 + 25)), 2)
-        strength = 0
+        strength = round(max(30, min(90, raw_sell_pct)), 0)
 
     # Step 5: Coba Gemini AI untuk reasoning (opsional, tidak mengubah signal)
     reasoning = _get_gemini_reasoning(indicators, confluence, signal_type, api_key)
