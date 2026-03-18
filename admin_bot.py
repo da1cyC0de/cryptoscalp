@@ -24,6 +24,7 @@ _config: dict = {}
 
 
 def _is_admin(user_id: int) -> bool:
+    logger.info(f"🔍 Check admin: user_id={user_id}, admin_ids={_admin_ids}, match={user_id in _admin_ids}")
     return user_id in _admin_ids
 
 
