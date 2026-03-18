@@ -22,6 +22,7 @@ from price_fetcher import fetch_xauusd_data, get_spread_estimate
 from indicators import calculate_all_indicators
 from signal_generator import generate_signal_with_gemini
 from telegram_sender import send_telegram_message, format_signal_message
+from admin_bot import AdminBot
 
 # Setup logging
 logging.basicConfig(
@@ -45,6 +46,10 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 SIGNAL_INTERVAL = int(os.getenv('SIGNAL_INTERVAL_MINUTES', '15'))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 BOT_NAME = os.getenv('BOT_NAME', 'XAUUSD Scalp Signal')
+
+# Admin IDs (comma-separated Telegram user IDs)
+_admin_raw = os.getenv('ADMIN_IDS', '')
+ADMIN_IDS = [int(x.strip()) for x in _admin_raw.split(',') if x.strip().isdigit()]
 
 
 def validate_config():
@@ -171,7 +176,27 @@ def main():
     logger.info(f"⚙️  Timeframe: {TIMEFRAME}")
     logger.info(f"⚙️  Interval: setiap {SIGNAL_INTERVAL} menit")
     logger.info(f"⚙️  Bot Name: {BOT_NAME}")
+    logger.info(f"⚙️  Admin IDs: {ADMIN_IDS}")
     logger.info("")
+
+    # Start Admin Bot (Telegram command handler)
+    if ADMIN_IDS:
+        admin_config = {
+            'interval': SIGNAL_INTERVAL,
+            'timeframe': TIMEFRAME,
+            'bot_name': BOT_NAME,
+        }
+        admin_bot = AdminBot(
+            bot_token=TELEGRAM_BOT_TOKEN,
+            admin_ids=ADMIN_IDS,
+            signal_callback=run_signal,
+            config=admin_config,
+        )
+        admin_bot.start()
+        logger.info("🤖 Admin bot aktif! Kirim /signal ke bot untuk trigger manual")
+    else:
+        logger.warning("⚠️  ADMIN_IDS belum diisi di .env - admin bot tidak aktif")
+        logger.warning("   Tambahkan ADMIN_IDS=your_telegram_user_id di .env")
 
     # Jalankan signal pertama langsung
     logger.info("🚀 Menjalankan signal pertama...")
@@ -189,7 +214,8 @@ def main():
     )
 
     logger.info(f"📅 Scheduler aktif - signal setiap {SIGNAL_INTERVAL} menit")
-    logger.info("   Tekan Ctrl+C untuk berhenti\n")
+    logger.info("   Tekan Ctrl+C untuk berhenti")
+    logger.info("   Atau kirim /signal di Telegram untuk trigger manual\n")
 
     try:
         scheduler.start()
