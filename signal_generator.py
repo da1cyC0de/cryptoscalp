@@ -20,9 +20,12 @@ logger = logging.getLogger(__name__)
 
 def _calculate_confluence(indicators: dict) -> dict:
     """
-    Confluence scoring — TREND-FOLLOWING approach.
-    Rule #1: SELALU ikuti trend. RSI oversold di downtrend = SELL lebih, bukan BUY.
-    Signal hanya valid jika confluence >= 4.
+    Confluence scoring — BALANCED SCALP approach.
+    
+    Prinsip:
+    - Setiap KATEGORI indikator cuma dapat 1 vote max (tidak ada bias lagging)
+    - Exhaustion detection: jangan chase move yang sudah overextended
+    - Min 4 faktor searah, difference > 2 untuk signal
     """
     price = indicators['price']
     rsi = indicators['rsi']
@@ -50,112 +53,110 @@ def _calculate_confluence(indicators: dict) -> dict:
     buy_reasons = []
     sell_reasons = []
 
-    # === Tentukan TREND dulu (paling penting) ===
     is_uptrend = ema_trend in ('strong_bullish', 'bullish')
     is_downtrend = ema_trend in ('strong_bearish', 'bearish')
 
-    # 1. EMA TREND (bobot 2x karena paling penting)
-    if is_uptrend:
+    # === EXHAUSTION DETECTION ===
+    exhausted_down = rsi < 30 and stoch_k < 20
+    exhausted_up = rsi > 70 and stoch_k > 80
+
+    # -------------------------------------------------------
+    # 1. TREND (EMA alignment + ADX = 1 faktor gabungan)
+    #    Jangan kasih jika exhausted — move sudah capek
+    # -------------------------------------------------------
+    if is_uptrend and adx > 20 and plus_di > minus_di and not exhausted_up:
+        buy_reasons.append(f'Trend bullish (EMA+ADX={adx:.0f})')
+    elif is_downtrend and adx > 20 and minus_di > plus_di and not exhausted_down:
+        sell_reasons.append(f'Trend bearish (EMA+ADX={adx:.0f})')
+    elif is_uptrend and not exhausted_up:
         buy_reasons.append('EMA trend bullish')
-        buy_reasons.append('Trade WITH uptrend')
-    elif is_downtrend:
+    elif is_downtrend and not exhausted_down:
         sell_reasons.append('EMA trend bearish')
-        sell_reasons.append('Trade WITH downtrend')
 
-    # 2. RSI — HARUS sesuai trend! Oversold di downtrend = bearish continuation
-    if is_downtrend:
-        if rsi < 40:
-            sell_reasons.append(f'RSI weak ({rsi}) in downtrend = continuation')
-        elif rsi > 60:
-            # RSI pullback ke overbought di downtrend = sell opportunity
-            sell_reasons.append(f'RSI pullback ({rsi}) in downtrend = sell zone')
-    elif is_uptrend:
-        if rsi > 60:
-            buy_reasons.append(f'RSI strong ({rsi}) in uptrend = continuation')
-        elif rsi < 40:
-            buy_reasons.append(f'RSI pullback ({rsi}) in uptrend = buy zone')
-    else:
-        # Sideways — RSI extreme baru berarti
-        if rsi < 25:
-            buy_reasons.append(f'RSI extreme oversold ({rsi})')
-        elif rsi > 75:
-            sell_reasons.append(f'RSI extreme overbought ({rsi})')
+    # -------------------------------------------------------
+    # 2. RSI — baca natural, extreme = reversal
+    # -------------------------------------------------------
+    if rsi < 25:
+        buy_reasons.append(f'RSI extreme oversold ({rsi:.0f}) — bounce likely')
+    elif rsi < 35:
+        buy_reasons.append(f'RSI oversold ({rsi:.0f})')
+    elif rsi > 75:
+        sell_reasons.append(f'RSI extreme overbought ({rsi:.0f}) — drop likely')
+    elif rsi > 65:
+        sell_reasons.append(f'RSI overbought ({rsi:.0f})')
 
-    # 3. ADX + DI
-    if adx > 20:
-        if plus_di > minus_di:
-            buy_reasons.append(f'+DI > -DI (ADX {adx})')
-        else:
-            sell_reasons.append(f'-DI > +DI (ADX {adx})')
-
-    # 4. MACD
+    # -------------------------------------------------------
+    # 3. MACD
+    # -------------------------------------------------------
     if macd_hist > 0 and macd > macd_signal:
-        buy_reasons.append('MACD bullish')
+        buy_reasons.append('MACD bullish crossover')
     elif macd_hist < 0 and macd < macd_signal:
-        sell_reasons.append('MACD bearish')
+        sell_reasons.append('MACD bearish crossover')
 
-    # 5. BOLLINGER — juga harus sesuai trend
-    if is_downtrend:
-        if price < bb_middle:
-            sell_reasons.append('Price below BB mid (bearish)')
-        if price <= bb_lower:
-            sell_reasons.append('Breaking BB lower (strong bearish)')
-    elif is_uptrend:
-        if price > bb_middle:
-            buy_reasons.append('Price above BB mid (bullish)')
-        if price >= bb_upper:
-            buy_reasons.append('Breaking BB upper (strong bullish)')
+    # -------------------------------------------------------
+    # 4. BOLLINGER BANDS — mean reversion
+    # -------------------------------------------------------
+    if price <= bb_lower:
+        buy_reasons.append('Price at BB lower — oversold')
+    elif price >= bb_upper:
+        sell_reasons.append('Price at BB upper — overbought')
+    elif price > bb_middle:
+        buy_reasons.append('Price above BB mid')
     else:
-        if price < bb_middle:
-            sell_reasons.append('Below BB middle')
-        else:
-            buy_reasons.append('Above BB middle')
+        sell_reasons.append('Price below BB mid')
 
-    # 6. STOCHASTIC — sesuai trend
-    if is_downtrend:
-        if stoch_k < 30:
-            sell_reasons.append(f'Stoch bearish ({stoch_k:.0f})')
-        elif stoch_k > stoch_d:
-            pass  # Ignore bullish stoch in downtrend
-        else:
-            sell_reasons.append('Stoch K < D')
-    elif is_uptrend:
-        if stoch_k > 70:
-            buy_reasons.append(f'Stoch bullish ({stoch_k:.0f})')
-        elif stoch_k < stoch_d:
-            pass  # Ignore bearish stoch in uptrend
-        else:
-            buy_reasons.append('Stoch K > D')
+    # -------------------------------------------------------
+    # 5. STOCHASTIC — leading oscillator
+    # -------------------------------------------------------
+    if stoch_k < 20:
+        buy_reasons.append(f'Stoch oversold ({stoch_k:.0f})')
+    elif stoch_k > 80:
+        sell_reasons.append(f'Stoch overbought ({stoch_k:.0f})')
+    elif stoch_k > stoch_d:
+        buy_reasons.append('Stoch K > D bullish')
     else:
-        if stoch_k > stoch_d:
-            buy_reasons.append('Stoch K > D')
-        else:
-            sell_reasons.append('Stoch K < D')
+        sell_reasons.append('Stoch K < D bearish')
 
-    # 7. MOMENTUM
+    # -------------------------------------------------------
+    # 6. MOMENTUM (recent 5 candles — paling cepat)
+    # -------------------------------------------------------
     if momentum_dir == 'bullish':
-        buy_reasons.append('Momentum bullish')
+        buy_reasons.append('Recent momentum bullish')
     elif momentum_dir == 'bearish':
-        sell_reasons.append('Momentum bearish')
+        sell_reasons.append('Recent momentum bearish')
 
-    # 8. CANDLE PATTERN (hanya jika sesuai trend)
-    if candle_bias == 'bullish' and not is_downtrend:
-        buy_reasons.append('Candle bullish')
-    elif candle_bias == 'bearish' and not is_uptrend:
-        sell_reasons.append('Candle bearish')
+    # -------------------------------------------------------
+    # 7. CANDLE PATTERN
+    # -------------------------------------------------------
+    if candle_bias == 'bullish':
+        buy_reasons.append('Candle pattern bullish')
+    elif candle_bias == 'bearish':
+        sell_reasons.append('Candle pattern bearish')
 
-    # 9. VWAP
+    # -------------------------------------------------------
+    # 8. VWAP — institutional reference
+    # -------------------------------------------------------
     if vwap > 0:
         if price > vwap:
-            buy_reasons.append('Above VWAP')
+            buy_reasons.append('Price above VWAP')
         else:
-            sell_reasons.append('Below VWAP')
+            sell_reasons.append('Price below VWAP')
 
-    # BONUS: RSI Divergence (only valid for reversal confirmation)
-    if rsi_div == 'bullish' and not is_downtrend:
+    # -------------------------------------------------------
+    # 9. RSI Divergence — early reversal signal
+    # -------------------------------------------------------
+    if rsi_div == 'bullish':
         buy_reasons.append('RSI bullish divergence')
-    elif rsi_div == 'bearish' and not is_uptrend:
+    elif rsi_div == 'bearish':
         sell_reasons.append('RSI bearish divergence')
+
+    # -------------------------------------------------------
+    # 10. EXHAUSTION BONUS — double extreme = strong reversal
+    # -------------------------------------------------------
+    if exhausted_down:
+        buy_reasons.append('EXHAUSTION: oversold extreme — reversal imminent')
+    if exhausted_up:
+        sell_reasons.append('EXHAUSTION: overbought extreme — reversal imminent')
 
     buy_score = len(buy_reasons)
     sell_score = len(sell_reasons)
@@ -232,12 +233,17 @@ def _calculate_smart_levels(indicators: dict, signal_type: str) -> dict:
 # MAIN SIGNAL GENERATION
 # ============================================================
 
+# Track last signal to avoid duplicates
+_last_signal = {'type': None, 'price': 0, 'time': None}
+
+
 def generate_signal_with_gemini(indicators: dict, api_key: str) -> dict:
     """
     Generate signal XAUUSD menggunakan confluence analysis.
     Gemini AI hanya digunakan sebagai konfirmasi tambahan, bukan pembuat keputusan.
     Keputusan utama berdasarkan data teknikal murni.
     """
+    from datetime import datetime
 
     # Step 1: Hitung confluence
     confluence = _calculate_confluence(indicators)
@@ -251,14 +257,31 @@ def generate_signal_with_gemini(indicators: dict, api_key: str) -> dict:
     # Step 2: Tentukan signal berdasarkan confluence
     min_confluence = 4  # Minimal 4 faktor harus sejalan
 
-    if buy_score >= min_confluence and buy_score > sell_score + 1:
+    if buy_score >= min_confluence and buy_score > sell_score + 2:
         signal_type = 'BUY'
-    elif sell_score >= min_confluence and sell_score > buy_score + 1:
+    elif sell_score >= min_confluence and sell_score > buy_score + 2:
         signal_type = 'SELL'
     else:
         # Confluence tidak cukup kuat — JANGAN TRADE
         logger.info(f"⏸️ Confluence terlalu lemah ({buy_score} vs {sell_score}), skip signal")
         signal_type = 'NEUTRAL'
+
+    # Step 2b: Duplicate signal prevention
+    global _last_signal
+    price = indicators['price']
+    price_diff = abs(price - _last_signal['price'])
+    atr = indicators['atr']
+
+    if (signal_type != 'NEUTRAL'
+            and signal_type == _last_signal['type']
+            and price_diff < atr * 0.3):
+        logger.info(f"⏭️ Skip duplicate signal: {signal_type} at similar price "
+                     f"(diff={price_diff:.2f}, threshold={atr * 0.3:.2f})")
+        signal_type = 'NEUTRAL'
+
+    # Update last signal tracker
+    if signal_type != 'NEUTRAL':
+        _last_signal = {'type': signal_type, 'price': price, 'time': datetime.now()}
 
     # Step 3: Hitung levels
     if signal_type != 'NEUTRAL':
@@ -274,19 +297,22 @@ def generate_signal_with_gemini(indicators: dict, api_key: str) -> dict:
             'risk': round(atr, 2),
         }
 
-    # Step 4: Hitung probability & strength
+    # Step 4: Hitung probability & strength (never 0% or 100%)
     total = max(buy_score + sell_score, 1)
+    raw_buy_pct = buy_score / total * 100
+    raw_sell_pct = sell_score / total * 100
+
+    # Clamp between 10-90% — market selalu punya uncertainty
+    prob_up = round(max(10, min(90, raw_buy_pct)), 2)
+    prob_down = round(max(10, min(90, raw_sell_pct)), 2)
+
     if signal_type == 'BUY':
-        prob_up = round(buy_score / total * 100, 2)
-        prob_down = round(sell_score / total * 100, 2)
-        strength = round(buy_score / total * 100, 0)
+        strength = round(min(90, raw_buy_pct), 0)
     elif signal_type == 'SELL':
-        prob_up = round(buy_score / total * 100, 2)
-        prob_down = round(sell_score / total * 100, 2)
-        strength = round(sell_score / total * 100, 0)
+        strength = round(min(90, raw_sell_pct), 0)
     else:
-        prob_up = round(buy_score / total * 50, 2)
-        prob_down = round(sell_score / total * 50, 2)
+        prob_up = round(max(10, min(90, raw_buy_pct * 0.5 + 25)), 2)
+        prob_down = round(max(10, min(90, raw_sell_pct * 0.5 + 25)), 2)
         strength = 0
 
     # Step 5: Coba Gemini AI untuk reasoning (opsional, tidak mengubah signal)
