@@ -4,85 +4,83 @@ Mengambil data harga real-time dari berbagai sumber
 """
 
 import logging
+import requests
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
+# Disable yfinance cache agar selalu ambil data fresh
+yf.set_tz_cache_location(None)
+
 
 def fetch_xauusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.DataFrame:
     """
     Ambil data XAUUSD dari Yahoo Finance.
     Ticker: GC=F (Gold Futures) sebagai proxy XAUUSD.
-    
-    Args:
-        timeframe: interval candle (1m, 5m, 15m, 1h, 1d)
-        lookback_days: berapa hari data ke belakang
-        
-    Returns:
-        DataFrame dengan kolom Open, High, Low, Close, Volume
     """
-    # Yahoo Finance interval mapping
     interval_map = {
-        '1m': ('1m', 1),      # Max 7 hari untuk 1m
-        '5m': ('5m', 5),      # Max 60 hari untuk 5m
-        '15m': ('15m', 30),   # Max 60 hari untuk 15m
-        '1h': ('1h', 60),     # Max 730 hari untuk 1h
+        '1m': ('1m', 1),
+        '5m': ('5m', 5),
+        '15m': ('15m', 30),
+        '1h': ('1h', 60),
         '1d': ('1d', 365),
     }
 
     interval, max_days = interval_map.get(timeframe, ('15m', 30))
     days = min(lookback_days, max_days)
 
-    try:
-        ticker = yf.Ticker("GC=F")
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
+    tickers_to_try = ["GC=F", "XAUUSD=X"]
 
-        df = ticker.history(
-            start=start_date.strftime("%Y-%m-%d"),
-            end=end_date.strftime("%Y-%m-%d"),
-            interval=interval
-        )
-
-        if df.empty:
-            logger.warning("Data dari GC=F kosong, mencoba XAUUSD=X...")
-            ticker = yf.Ticker("XAUUSD=X")
-            df = ticker.history(
-                start=start_date.strftime("%Y-%m-%d"),
-                end=end_date.strftime("%Y-%m-%d"),
-                interval=interval
+    for symbol in tickers_to_try:
+        try:
+            logger.info(f"📡 Mencoba ambil data dari {symbol}...")
+            df = yf.download(
+                symbol,
+                period=f"{days}d",
+                interval=interval,
+                progress=False,
+                auto_adjust=True,
             )
 
-        if df.empty:
-            logger.error("Tidak bisa mengambil data harga XAUUSD")
-            return pd.DataFrame()
+            if df is not None and not df.empty:
+                # Handle multi-level columns dari yf.download
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
 
-        # Bersihkan kolom
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-        df.dropna(inplace=True)
+                df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+                df.dropna(inplace=True)
 
-        logger.info(f"✅ Berhasil ambil {len(df)} candle XAUUSD ({interval})")
-        return df
+                if not df.empty:
+                    logger.info(f"✅ {symbol}: {len(df)} candle, "
+                                f"harga terakhir: {df['Close'].iloc[-1]:.2f}, "
+                                f"waktu: {df.index[-1]}")
+                    return df
 
-    except Exception as e:
-        logger.error(f"❌ Error mengambil data harga: {e}")
-        return pd.DataFrame()
+            logger.warning(f"⚠️ {symbol} kosong, coba ticker lain...")
+        except Exception as e:
+            logger.warning(f"⚠️ {symbol} error: {e}")
+            continue
+
+    logger.error("❌ Semua ticker gagal. Tidak bisa ambil data harga XAUUSD")
+    return pd.DataFrame()
 
 
 def get_current_price() -> float:
     """Ambil harga XAUUSD terkini"""
     try:
-        ticker = yf.Ticker("GC=F")
-        data = ticker.history(period="1d", interval="1m")
-        if not data.empty:
-            return float(data['Close'].iloc[-1])
+        df = yf.download("GC=F", period="1d", interval="1m", progress=False)
+        if df is not None and not df.empty:
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            return float(df['Close'].iloc[-1])
 
-        ticker = yf.Ticker("XAUUSD=X")
-        data = ticker.history(period="1d", interval="1m")
-        if not data.empty:
-            return float(data['Close'].iloc[-1])
+        df = yf.download("XAUUSD=X", period="1d", interval="1m", progress=False)
+        if df is not None and not df.empty:
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            return float(df['Close'].iloc[-1])
 
         return 0.0
     except Exception as e:
