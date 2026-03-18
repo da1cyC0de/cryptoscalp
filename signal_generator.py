@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 
 def _calculate_confluence(indicators: dict) -> dict:
     """
-    Hitung confluence score dari 7 faktor independen.
-    Setiap faktor memberikan skor +1 BUY atau +1 SELL.
+    Confluence scoring — TREND-FOLLOWING approach.
+    Rule #1: SELALU ikuti trend. RSI oversold di downtrend = SELL lebih, bukan BUY.
     Signal hanya valid jika confluence >= 4.
     """
     price = indicators['price']
@@ -50,78 +50,112 @@ def _calculate_confluence(indicators: dict) -> dict:
     buy_reasons = []
     sell_reasons = []
 
-    # 1. EMA TREND ALIGNMENT (most important)
-    if ema_trend in ('strong_bullish', 'bullish'):
+    # === Tentukan TREND dulu (paling penting) ===
+    is_uptrend = ema_trend in ('strong_bullish', 'bullish')
+    is_downtrend = ema_trend in ('strong_bearish', 'bearish')
+
+    # 1. EMA TREND (bobot 2x karena paling penting)
+    if is_uptrend:
         buy_reasons.append('EMA trend bullish')
-    elif ema_trend in ('strong_bearish', 'bearish'):
+        buy_reasons.append('Trade WITH uptrend')
+    elif is_downtrend:
         sell_reasons.append('EMA trend bearish')
+        sell_reasons.append('Trade WITH downtrend')
 
-    # 2. RSI CONDITION
-    if rsi < 35:
-        buy_reasons.append(f'RSI oversold ({rsi})')
-    elif rsi > 65:
-        sell_reasons.append(f'RSI overbought ({rsi})')
-    elif rsi < 50 and momentum_dir == 'bearish':
-        sell_reasons.append(f'RSI bearish zone ({rsi})')
-    elif rsi > 50 and momentum_dir == 'bullish':
-        buy_reasons.append(f'RSI bullish zone ({rsi})')
+    # 2. RSI — HARUS sesuai trend! Oversold di downtrend = bearish continuation
+    if is_downtrend:
+        if rsi < 40:
+            sell_reasons.append(f'RSI weak ({rsi}) in downtrend = continuation')
+        elif rsi > 60:
+            # RSI pullback ke overbought di downtrend = sell opportunity
+            sell_reasons.append(f'RSI pullback ({rsi}) in downtrend = sell zone')
+    elif is_uptrend:
+        if rsi > 60:
+            buy_reasons.append(f'RSI strong ({rsi}) in uptrend = continuation')
+        elif rsi < 40:
+            buy_reasons.append(f'RSI pullback ({rsi}) in uptrend = buy zone')
+    else:
+        # Sideways — RSI extreme baru berarti
+        if rsi < 25:
+            buy_reasons.append(f'RSI extreme oversold ({rsi})')
+        elif rsi > 75:
+            sell_reasons.append(f'RSI extreme overbought ({rsi})')
 
-    # 3. ADX + DI (Trend strength + direction)
+    # 3. ADX + DI
     if adx > 20:
         if plus_di > minus_di:
-            buy_reasons.append(f'+DI > -DI, ADX={adx}')
+            buy_reasons.append(f'+DI > -DI (ADX {adx})')
         else:
-            sell_reasons.append(f'-DI > +DI, ADX={adx}')
+            sell_reasons.append(f'-DI > +DI (ADX {adx})')
 
     # 4. MACD
     if macd_hist > 0 and macd > macd_signal:
-        buy_reasons.append('MACD bullish crossover')
+        buy_reasons.append('MACD bullish')
     elif macd_hist < 0 and macd < macd_signal:
-        sell_reasons.append('MACD bearish crossover')
+        sell_reasons.append('MACD bearish')
 
-    # 5. BOLLINGER BANDS POSITION
-    if price <= bb_lower:
-        buy_reasons.append('Price at BB lower (oversold)')
-    elif price >= bb_upper:
-        sell_reasons.append('Price at BB upper (overbought)')
-    elif price < bb_middle:
-        sell_reasons.append('Price below BB middle')
+    # 5. BOLLINGER — juga harus sesuai trend
+    if is_downtrend:
+        if price < bb_middle:
+            sell_reasons.append('Price below BB mid (bearish)')
+        if price <= bb_lower:
+            sell_reasons.append('Breaking BB lower (strong bearish)')
+    elif is_uptrend:
+        if price > bb_middle:
+            buy_reasons.append('Price above BB mid (bullish)')
+        if price >= bb_upper:
+            buy_reasons.append('Breaking BB upper (strong bullish)')
     else:
-        buy_reasons.append('Price above BB middle')
+        if price < bb_middle:
+            sell_reasons.append('Below BB middle')
+        else:
+            buy_reasons.append('Above BB middle')
 
-    # 6. STOCHASTIC
-    if stoch_k < 25 and stoch_d < 25:
-        buy_reasons.append(f'Stoch oversold ({stoch_k:.0f})')
-    elif stoch_k > 75 and stoch_d > 75:
-        sell_reasons.append(f'Stoch overbought ({stoch_k:.0f})')
-    elif stoch_k > stoch_d:
-        buy_reasons.append('Stoch K > D')
+    # 6. STOCHASTIC — sesuai trend
+    if is_downtrend:
+        if stoch_k < 30:
+            sell_reasons.append(f'Stoch bearish ({stoch_k:.0f})')
+        elif stoch_k > stoch_d:
+            pass  # Ignore bullish stoch in downtrend
+        else:
+            sell_reasons.append('Stoch K < D')
+    elif is_uptrend:
+        if stoch_k > 70:
+            buy_reasons.append(f'Stoch bullish ({stoch_k:.0f})')
+        elif stoch_k < stoch_d:
+            pass  # Ignore bearish stoch in uptrend
+        else:
+            buy_reasons.append('Stoch K > D')
     else:
-        sell_reasons.append('Stoch K < D')
+        if stoch_k > stoch_d:
+            buy_reasons.append('Stoch K > D')
+        else:
+            sell_reasons.append('Stoch K < D')
 
-    # 7. CANDLESTICK PATTERN + MOMENTUM
-    if candle_bias == 'bullish':
-        buy_reasons.append(f'Candle pattern bullish')
-    elif candle_bias == 'bearish':
-        sell_reasons.append(f'Candle pattern bearish')
-
+    # 7. MOMENTUM
     if momentum_dir == 'bullish':
         buy_reasons.append('Momentum bullish')
     elif momentum_dir == 'bearish':
         sell_reasons.append('Momentum bearish')
 
-    # BONUS: RSI Divergence (strong reversal signal)
-    if rsi_div == 'bullish':
-        buy_reasons.append('RSI bullish divergence!')
-    elif rsi_div == 'bearish':
-        sell_reasons.append('RSI bearish divergence!')
+    # 8. CANDLE PATTERN (hanya jika sesuai trend)
+    if candle_bias == 'bullish' and not is_downtrend:
+        buy_reasons.append('Candle bullish')
+    elif candle_bias == 'bearish' and not is_uptrend:
+        sell_reasons.append('Candle bearish')
 
-    # BONUS: VWAP
+    # 9. VWAP
     if vwap > 0:
         if price > vwap:
-            buy_reasons.append('Price above VWAP')
+            buy_reasons.append('Above VWAP')
         else:
-            sell_reasons.append('Price below VWAP')
+            sell_reasons.append('Below VWAP')
+
+    # BONUS: RSI Divergence (only valid for reversal confirmation)
+    if rsi_div == 'bullish' and not is_downtrend:
+        buy_reasons.append('RSI bullish divergence')
+    elif rsi_div == 'bearish' and not is_uptrend:
+        sell_reasons.append('RSI bearish divergence')
 
     buy_score = len(buy_reasons)
     sell_score = len(sell_reasons)
@@ -138,60 +172,59 @@ def _calculate_confluence(indicators: dict) -> dict:
 
 def _calculate_smart_levels(indicators: dict, signal_type: str) -> dict:
     """
-    Hitung SL/TP yang smart berdasarkan:
-    - ATR untuk dinamis range
-    - Support/Resistance untuk placement
-    - Minimal Risk:Reward 1:2
+    SL/TP untuk SCALPING — ketat dan realistis.
+    - SL: 0.8-1x ATR (tight)
+    - TP1: 0.8x risk (quick profit, high win rate)
+    - TP2: 1.2x risk
+    - TP3: 1.8x risk
     """
     price = indicators['price']
     atr = indicators['atr']
-    nearest_support = indicators.get('nearest_support', price - 20)
-    nearest_resistance = indicators.get('nearest_resistance', price + 20)
+    nearest_support = indicators.get('nearest_support', price - 15)
+    nearest_resistance = indicators.get('nearest_resistance', price + 15)
 
     if signal_type == 'BUY':
-        # SL tepat di bawah nearest support atau 1x ATR, mana yang lebih kecil
-        sl_by_sr = nearest_support - (atr * 0.3)
-        sl_by_atr = price - (atr * 1.2)
-        stop_loss = max(sl_by_sr, sl_by_atr)  # Ambil yang lebih dekat (risk lebih kecil)
+        # SL: di bawah support atau 1x ATR
+        sl_by_sr = nearest_support - (atr * 0.2)
+        sl_by_atr = price - (atr * 1.0)
+        stop_loss = max(sl_by_sr, sl_by_atr)
 
         risk = price - stop_loss
-        if risk < atr * 0.5:
-            risk = atr * 0.8
+        if risk < atr * 0.4:
+            risk = atr * 0.6
+            stop_loss = price - risk
+        # Cap max risk di 1.2x ATR agar SL tidak terlalu lebar
+        if risk > atr * 1.2:
+            risk = atr * 1.0
             stop_loss = price - risk
 
-        # TP dengan R:R minimal 1:1.5, 1:2, 1:3
-        tp1 = round(price + (risk * 1.5), 2)
-        tp2 = round(price + (risk * 2.0), 2)
-        tp3 = round(price + (risk * 3.0), 2)
-
-        # Jika resistance di jalan, sesuaikan
-        if tp1 > nearest_resistance and nearest_resistance > price:
-            tp1 = round(nearest_resistance - (atr * 0.1), 2)
+        tp1 = round(price + (risk * 0.8), 2)
+        tp2 = round(price + (risk * 1.2), 2)
+        tp3 = round(price + (risk * 1.8), 2)
 
     else:  # SELL
-        # SL tepat di atas nearest resistance atau 1x ATR
-        sl_by_sr = nearest_resistance + (atr * 0.3)
-        sl_by_atr = price + (atr * 1.2)
+        sl_by_sr = nearest_resistance + (atr * 0.2)
+        sl_by_atr = price + (atr * 1.0)
         stop_loss = min(sl_by_sr, sl_by_atr)
 
         risk = stop_loss - price
-        if risk < atr * 0.5:
-            risk = atr * 0.8
+        if risk < atr * 0.4:
+            risk = atr * 0.6
+            stop_loss = price + risk
+        if risk > atr * 1.2:
+            risk = atr * 1.0
             stop_loss = price + risk
 
-        tp1 = round(price - (risk * 1.5), 2)
-        tp2 = round(price - (risk * 2.0), 2)
-        tp3 = round(price - (risk * 3.0), 2)
-
-        if tp1 < nearest_support and nearest_support < price:
-            tp1 = round(nearest_support + (atr * 0.1), 2)
+        tp1 = round(price - (risk * 0.8), 2)
+        tp2 = round(price - (risk * 1.2), 2)
+        tp3 = round(price - (risk * 1.8), 2)
 
     return {
         'stop_loss': round(stop_loss, 2),
         'tp1': tp1,
         'tp2': tp2,
         'tp3': tp3,
-        'risk': round(abs(price - stop_loss), 2),
+        'risk': round(risk, 2),
     }
 
 
