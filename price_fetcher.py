@@ -86,14 +86,26 @@ def get_current_price() -> float:
 
 
 def get_spread_estimate() -> float:
-    """Estimasi spread dari bid-ask (simplified)"""
+    """Estimasi spread dari bid-ask real-time"""
     try:
         ticker = yf.Ticker("GC=F")
+        # fast_info lebih cepat dan up-to-date daripada .info
+        bid = getattr(ticker, 'fast_info', {}).get('bid', 0)
+        ask = getattr(ticker, 'fast_info', {}).get('ask', 0)
+        if bid and ask and bid > 0 and ask > 0:
+            spread = round(ask - bid, 2)
+            if 0.01 < spread < 5.0:  # Sanity check
+                return spread
+
+        # Fallback ke .info
         info = ticker.info
         bid = info.get('bid', 0)
         ask = info.get('ask', 0)
-        if bid > 0 and ask > 0:
-            return round(ask - bid, 2)
-        return 0.45  # Default spread estimate untuk XAUUSD
+        if bid and ask and bid > 0 and ask > 0:
+            spread = round(ask - bid, 2)
+            if 0.01 < spread < 5.0:
+                return spread
+
+        return 0.45
     except Exception:
         return 0.45

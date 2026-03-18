@@ -41,21 +41,43 @@ def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int
     return atr
 
 
-def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
-    """Hitung Average Directional Index"""
+def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14):
+    """Hitung Average Directional Index dengan Wilder's smoothing penuh"""
     plus_dm = high.diff()
     minus_dm = -low.diff()
 
     plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
     minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
 
-    atr = calculate_atr(high, low, close, period)
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-    plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
-    minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+    # Wilder's smoothing untuk ATR, +DM, -DM
+    atr_smooth = tr.rolling(window=period, min_periods=period).sum()
+    plus_dm_smooth = plus_dm.rolling(window=period, min_periods=period).sum()
+    minus_dm_smooth = minus_dm.rolling(window=period, min_periods=period).sum()
+
+    for i in range(period, len(close)):
+        atr_smooth.iloc[i] = atr_smooth.iloc[i - 1] - (atr_smooth.iloc[i - 1] / period) + tr.iloc[i]
+        plus_dm_smooth.iloc[i] = plus_dm_smooth.iloc[i - 1] - (plus_dm_smooth.iloc[i - 1] / period) + plus_dm.iloc[i]
+        minus_dm_smooth.iloc[i] = minus_dm_smooth.iloc[i - 1] - (minus_dm_smooth.iloc[i - 1] / period) + minus_dm.iloc[i]
+
+    plus_di = 100 * (plus_dm_smooth / atr_smooth)
+    minus_di = 100 * (minus_dm_smooth / atr_smooth)
 
     dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx = dx.rolling(window=period).mean()
+
+    # ADX: Wilder's smoothing pada DX
+    adx = dx.copy()
+    first_adx_idx = period * 2 - 1
+    if first_adx_idx < len(dx):
+        adx.iloc[first_adx_idx] = dx.iloc[period:period * 2].mean()
+        for i in range(first_adx_idx + 1, len(dx)):
+            adx.iloc[i] = (adx.iloc[i - 1] * (period - 1) + dx.iloc[i]) / period
+        # Set sebelum first_adx_idx ke NaN
+        adx.iloc[:first_adx_idx] = np.nan
 
     return adx, plus_di, minus_di
 
