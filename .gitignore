@@ -1,0 +1,4 @@
+xauusd_signal.log
+__pycache__/
+*.pyc
+.env
