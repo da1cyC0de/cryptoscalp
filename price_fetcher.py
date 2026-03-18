@@ -11,9 +11,6 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# Disable yfinance cache agar selalu ambil data fresh
-yf.set_tz_cache_location(None)
-
 
 def fetch_xauusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.DataFrame:
     """

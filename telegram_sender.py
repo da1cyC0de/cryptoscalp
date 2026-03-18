@@ -1,45 +1,62 @@
 """
-Telegram Sender Module
+Telegram Sender Module - Powered by aiogram 3
 Mengirim signal ke Telegram channel/group
 """
 
 import logging
-import requests
+from aiogram import Bot
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
 logger = logging.getLogger(__name__)
 
 
-def send_telegram_message(bot_token: str, chat_id: str, message: str) -> bool:
-    """
-    Kirim pesan ke Telegram menggunakan Bot API.
-    Returns True jika berhasil, False jika gagal.
-    """
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-
+async def _send_async(bot_token: str, chat_id: str, message: str) -> bool:
+    """Internal async send"""
+    bot = Bot(
+        token=bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     try:
-        response = requests.post(url, json=payload, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-
-        if result.get("ok"):
-            logger.info("✅ Signal berhasil dikirim ke Telegram!")
-            return True
-        else:
-            logger.error(f"❌ Telegram API error: {result.get('description', 'Unknown error')}")
-            return False
-
-    except requests.exceptions.Timeout:
-        logger.error("❌ Timeout saat mengirim ke Telegram")
-        return False
-    except requests.exceptions.RequestException as e:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=message,
+            disable_web_page_preview=True
+        )
+        logger.info("✅ Signal berhasil dikirim ke Telegram!")
+        return True
+    except Exception as e:
         logger.error(f"❌ Gagal mengirim ke Telegram: {e}")
         return False
+    finally:
+        await bot.session.close()
+
+
+def send_telegram_message(bot_token: str, chat_id: str, message: str) -> bool:
+    """
+    Kirim pesan ke Telegram menggunakan aiogram Bot.
+    Bisa dipanggil dari sync context (thread scheduler).
+    """
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Kalau dipanggil dari dalam async context (admin bot)
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(_send_sync_fallback, bot_token, chat_id, message)
+                return future.result(timeout=30)
+        else:
+            return loop.run_until_complete(_send_async(bot_token, chat_id, message))
+    except RuntimeError:
+        # No event loop, buat baru
+        return asyncio.run(_send_async(bot_token, chat_id, message))
+
+
+def _send_sync_fallback(bot_token: str, chat_id: str, message: str) -> bool:
+    """Fallback sync sender pakai asyncio.run di thread baru"""
+    import asyncio
+    return asyncio.run(_send_async(bot_token, chat_id, message))
 
 
 def format_signal_message(signal_data: dict) -> str:
