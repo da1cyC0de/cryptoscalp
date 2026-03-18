@@ -1,7 +1,7 @@
 """
 Price Data Fetcher untuk XAUUSD
-Mengambil data harga real-time dari Yahoo Finance (GC=F)
-dengan koreksi ke harga spot menggunakan live price.
+Mengambil harga spot dari TradingView (TVC:GOLD) dan
+candle data dari Yahoo Finance (GC=F) yang di-adjust ke spot.
 """
 
 import logging
@@ -13,11 +13,36 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 
+def _get_spot_price_tradingview() -> float:
+    """
+    Ambil harga spot XAUUSD dari TradingView Scanner API (gratis, tanpa key).
+    Ini harga yang sama persis dengan yang muncul di tradingview.com/symbols/XAUUSD
+    """
+    try:
+        payload = {
+            "symbols": {"tickers": ["TVC:GOLD"]},
+            "columns": ["close"]
+        }
+        resp = requests.post(
+            "https://scanner.tradingview.com/cfd/scan",
+            json=payload,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("data") and len(data["data"]) > 0:
+            price = float(data["data"][0]["d"][0])
+            if price > 1000:
+                logger.info(f"💰 TradingView spot (TVC:GOLD): {price:.2f}")
+                return price
+    except Exception as e:
+        logger.warning(f"TradingView API error: {e}")
+    return 0.0
+
+
 def _get_live_price_gcf() -> float:
-    """
-    Ambil LIVE price GC=F dari Yahoo Finance fast_info.
-    Ini lebih real-time daripada candle terakhir dari yf.download().
-    """
+    """Ambil LIVE price GC=F dari Yahoo Finance (futures, harga lebih tinggi dari spot)"""
     try:
         ticker = yf.Ticker("GC=F")
         fi = ticker.fast_info
@@ -27,7 +52,6 @@ def _get_live_price_gcf() -> float:
     except Exception as e:
         logger.warning(f"fast_info error: {e}")
 
-    # Fallback: Yahoo Chart API langsung
     try:
         resp = requests.get(
             "https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
@@ -47,12 +71,8 @@ def _get_live_price_gcf() -> float:
 
 def fetch_xauusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.DataFrame:
     """
-    Ambil data candle XAUUSD dari GC=F.
-    Candle terakhir mungkin sudah stale (beda jam), jadi di-adjust
-    ke live price supaya harga yang ditampilkan di sinyal akurat.
-
-    Indikator teknikal (RSI, ADX, ATR, BB, MACD) tidak terpengaruh shifting
-    karena dihitung dari perubahan relatif, bukan harga absolut.
+    Ambil data candle XAUUSD.
+    Candle dari GC=F (futures), tapi di-adjust ke harga spot dari TradingView.
     """
     interval_map = {
         '1m': ('1m', 1),
@@ -79,7 +99,6 @@ def fetch_xauusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.Data
             logger.error("❌ GC=F: data kosong")
             return pd.DataFrame()
 
-        # Handle multi-level columns
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
@@ -90,23 +109,40 @@ def fetch_xauusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.Data
             logger.error("❌ GC=F: data kosong setelah dropna")
             return pd.DataFrame()
 
-        last_candle_close = float(df['Close'].iloc[-1])
-        logger.info(f"📊 GC=F candle terakhir: {last_candle_close:.2f} ({df.index[-1]})")
+        # Ambil live futures price (lebih real-time daripada candle terakhir)
+        futures_live = _get_live_price_gcf()
+        last_candle = float(df['Close'].iloc[-1])
 
-        # Ambil LIVE price untuk mengkoreksi candle yang mungkin stale
-        live_price = _get_live_price_gcf()
-        if live_price > 0:
-            diff = last_candle_close - live_price
+        # Ambil harga spot dari TradingView
+        spot = _get_spot_price_tradingview()
+
+        if spot > 0 and futures_live > 0:
+            # Adjust dari futures ke spot
+            diff = futures_live - spot
+            logger.info(f"📊 Futures live: {futures_live:.2f}, Spot: {spot:.2f}, "
+                        f"Premium: {diff:.2f}, Candle terakhir: {last_candle:.2f}")
+
+            # Shift seluruh candle: kurangi premium futures + koreksi stale candle
+            total_shift = last_candle - spot
+            if abs(total_shift) > 1:
+                logger.info(f"🔧 Adjusting candle ke spot: shift={total_shift:.2f}")
+                df['Open'] = df['Open'] - total_shift
+                df['High'] = df['High'] - total_shift
+                df['Low'] = df['Low'] - total_shift
+                df['Close'] = df['Close'] - total_shift
+
+        elif futures_live > 0:
+            # TradingView gagal, minimal adjust ke live futures price
+            diff = last_candle - futures_live
             if abs(diff) > 1:
-                logger.info(f"🔧 Adjusting candle ke live price: "
-                            f"candle={last_candle_close:.2f}, live={live_price:.2f}, diff={diff:.2f}")
+                logger.info(f"🔧 Adjusting candle ke live futures: diff={diff:.2f}")
                 df['Open'] = df['Open'] - diff
                 df['High'] = df['High'] - diff
                 df['Low'] = df['Low'] - diff
                 df['Close'] = df['Close'] - diff
 
         final_price = float(df['Close'].iloc[-1])
-        logger.info(f"✅ Data siap: {len(df)} candle, harga: {final_price:.2f}")
+        logger.info(f"✅ Data siap: {len(df)} candle, harga final: {final_price:.2f}")
         return df
 
     except Exception as e:
@@ -115,11 +151,18 @@ def fetch_xauusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.Data
 
 
 def get_current_price() -> float:
-    """Ambil harga XAUUSD terkini (live)"""
+    """Ambil harga spot XAUUSD terkini"""
+    # 1. TradingView (spot, paling akurat)
+    spot = _get_spot_price_tradingview()
+    if spot > 0:
+        return spot
+
+    # 2. Fallback ke GC=F live (futures)
     price = _get_live_price_gcf()
     if price > 0:
-        logger.info(f"💰 Live price: {price:.2f}")
+        logger.warning(f"⚠️ Pakai futures price: {price:.2f} (TradingView gagal)")
         return price
+
     return 0.0
 
 
