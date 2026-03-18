@@ -1,6 +1,6 @@
 """
 Technical Indicators Module untuk XAUUSD Scalp Signal
-Menghitung RSI, ADX, ATR, Bollinger Bands, dan indikator lainnya
+Pro-grade: Multi-timeframe analysis, candlestick patterns, support/resistance
 """
 
 import pandas as pd
@@ -117,6 +117,129 @@ def calculate_stochastic(high: pd.Series, low: pd.Series, close: pd.Series,
     return k, d
 
 
+def calculate_vwap(df: pd.DataFrame, period: int = 20) -> pd.Series:
+    """Hitung Volume Weighted Average Price (rolling)"""
+    typical = (df['High'] + df['Low'] + df['Close']) / 3
+    vol = df['Volume'].replace(0, 1)
+    vwap = (typical * vol).rolling(period).sum() / vol.rolling(period).sum()
+    return vwap
+
+
+def detect_support_resistance(df: pd.DataFrame, lookback: int = 50) -> dict:
+    """Deteksi level support dan resistance dari pivot points"""
+    recent = df.tail(lookback)
+    highs = recent['High']
+    lows = recent['Low']
+
+    # Swing highs (resistance)
+    resistance_levels = []
+    for i in range(2, len(highs) - 2):
+        if highs.iloc[i] > highs.iloc[i-1] and highs.iloc[i] > highs.iloc[i-2] and \
+           highs.iloc[i] > highs.iloc[i+1] and highs.iloc[i] > highs.iloc[i+2]:
+            resistance_levels.append(highs.iloc[i])
+
+    # Swing lows (support)
+    support_levels = []
+    for i in range(2, len(lows) - 2):
+        if lows.iloc[i] < lows.iloc[i-1] and lows.iloc[i] < lows.iloc[i-2] and \
+           lows.iloc[i] < lows.iloc[i+1] and lows.iloc[i] < lows.iloc[i+2]:
+            support_levels.append(lows.iloc[i])
+
+    price = float(df['Close'].iloc[-1])
+
+    # Nearest resistance above price
+    resistances_above = sorted([r for r in resistance_levels if r > price])
+    nearest_resistance = resistances_above[0] if resistances_above else price + 20
+
+    # Nearest support below price
+    supports_below = sorted([s for s in support_levels if s < price], reverse=True)
+    nearest_support = supports_below[0] if supports_below else price - 20
+
+    return {
+        'nearest_resistance': round(float(nearest_resistance), 2),
+        'nearest_support': round(float(nearest_support), 2),
+        'resistance_count': len(resistances_above),
+        'support_count': len(supports_below),
+    }
+
+
+def detect_candlestick_patterns(df: pd.DataFrame) -> dict:
+    """Deteksi pola candlestick terakhir"""
+    if len(df) < 3:
+        return {'pattern': 'none', 'bias': 'neutral'}
+
+    c = df.iloc[-1]  # Current candle
+    p = df.iloc[-2]  # Previous candle
+
+    body = c['Close'] - c['Open']
+    body_abs = abs(body)
+    upper_wick = c['High'] - max(c['Open'], c['Close'])
+    lower_wick = min(c['Open'], c['Close']) - c['Low']
+    candle_range = c['High'] - c['Low']
+
+    prev_body = p['Close'] - p['Open']
+
+    if candle_range == 0:
+        return {'pattern': 'doji', 'bias': 'neutral'}
+
+    # Doji
+    if body_abs < candle_range * 0.1:
+        return {'pattern': 'doji', 'bias': 'reversal'}
+
+    # Hammer (bullish reversal di downtrend)
+    if lower_wick > body_abs * 2 and upper_wick < body_abs * 0.5 and prev_body < 0:
+        return {'pattern': 'hammer', 'bias': 'bullish'}
+
+    # Shooting Star (bearish reversal di uptrend)
+    if upper_wick > body_abs * 2 and lower_wick < body_abs * 0.5 and prev_body > 0:
+        return {'pattern': 'shooting_star', 'bias': 'bearish'}
+
+    # Bullish Engulfing
+    if body > 0 and prev_body < 0 and c['Open'] <= p['Close'] and c['Close'] >= p['Open']:
+        return {'pattern': 'bullish_engulfing', 'bias': 'bullish'}
+
+    # Bearish Engulfing
+    if body < 0 and prev_body > 0 and c['Open'] >= p['Close'] and c['Close'] <= p['Open']:
+        return {'pattern': 'bearish_engulfing', 'bias': 'bearish'}
+
+    # Strong momentum candle
+    if body_abs > candle_range * 0.7:
+        bias = 'bullish' if body > 0 else 'bearish'
+        return {'pattern': 'momentum', 'bias': bias}
+
+    return {'pattern': 'none', 'bias': 'neutral'}
+
+
+def calculate_momentum_score(df: pd.DataFrame, lookback: int = 5) -> dict:
+    """Hitung momentum score dari beberapa candle terakhir"""
+    recent = df.tail(lookback)
+    closes = recent['Close'].values
+
+    # Consecutive direction
+    bullish_count = 0
+    bearish_count = 0
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i-1]:
+            bullish_count += 1
+        elif closes[i] < closes[i-1]:
+            bearish_count += 1
+
+    # Net movement
+    net_move = closes[-1] - closes[0]
+
+    # Volume trend (increasing = kuat)
+    vols = recent['Volume'].values
+    vol_increasing = vols[-1] > np.mean(vols[:-1]) if len(vols) > 1 and np.mean(vols[:-1]) > 0 else False
+
+    return {
+        'bullish_candles': bullish_count,
+        'bearish_candles': bearish_count,
+        'net_move': round(float(net_move), 2),
+        'vol_increasing': vol_increasing,
+        'direction': 'bullish' if net_move > 0 else 'bearish' if net_move < 0 else 'flat',
+    }
+
+
 def calculate_all_indicators(df: pd.DataFrame) -> dict:
     """
     Hitung semua indikator teknikal dari dataframe OHLCV.
@@ -145,11 +268,53 @@ def calculate_all_indicators(df: pd.DataFrame) -> dict:
     ema_9 = calculate_ema(close, 9)
     ema_21 = calculate_ema(close, 21)
     ema_50 = calculate_ema(close, 50)
+    ema_200 = calculate_ema(close, 200)
 
     # Stochastic
     stoch_k, stoch_d = calculate_stochastic(high, low, close)
 
-    # Ambil nilai terbaru (non-NaN)
+    # VWAP
+    vwap = calculate_vwap(df)
+
+    # Support/Resistance
+    sr = detect_support_resistance(df)
+
+    # Candlestick
+    candle = detect_candlestick_patterns(df)
+
+    # Momentum
+    momentum = calculate_momentum_score(df)
+
+    # Trend determination: EMA alignment
+    ema9_val = ema_9.dropna().iloc[-1] if not ema_9.dropna().empty else 0
+    ema21_val = ema_21.dropna().iloc[-1] if not ema_21.dropna().empty else 0
+    ema50_val = ema_50.dropna().iloc[-1] if not ema_50.dropna().empty else 0
+    ema200_val = ema_200.dropna().iloc[-1] if not ema_200.dropna().empty else 0
+    price_val = close.iloc[-1]
+
+    if ema9_val > ema21_val > ema50_val and price_val > ema50_val:
+        ema_trend = 'strong_bullish'
+    elif ema9_val > ema21_val and price_val > ema21_val:
+        ema_trend = 'bullish'
+    elif ema9_val < ema21_val < ema50_val and price_val < ema50_val:
+        ema_trend = 'strong_bearish'
+    elif ema9_val < ema21_val and price_val < ema21_val:
+        ema_trend = 'bearish'
+    else:
+        ema_trend = 'mixed'
+
+    # RSI divergence check (last 10 candles)
+    rsi_div = 'none'
+    if len(close) >= 10 and len(rsi.dropna()) >= 10:
+        price_10 = close.iloc[-10:]
+        rsi_10 = rsi.dropna().iloc[-10:]
+        # Bearish divergence: price making higher high but RSI making lower high
+        if price_10.iloc[-1] > price_10.iloc[-5] and rsi_10.iloc[-1] < rsi_10.iloc[-5]:
+            rsi_div = 'bearish'
+        # Bullish divergence: price making lower low but RSI making higher low
+        elif price_10.iloc[-1] < price_10.iloc[-5] and rsi_10.iloc[-1] > rsi_10.iloc[-5]:
+            rsi_div = 'bullish'
+
     latest = {
         'price': close.iloc[-1],
         'high': high.iloc[-1],
@@ -166,11 +331,24 @@ def calculate_all_indicators(df: pd.DataFrame) -> dict:
         'macd': round(macd_line.dropna().iloc[-1], 2) if not macd_line.dropna().empty else 0,
         'macd_signal': round(signal_line.dropna().iloc[-1], 2) if not signal_line.dropna().empty else 0,
         'macd_histogram': round(histogram.dropna().iloc[-1], 2) if not histogram.dropna().empty else 0,
-        'ema_9': round(ema_9.dropna().iloc[-1], 2) if not ema_9.dropna().empty else 0,
-        'ema_21': round(ema_21.dropna().iloc[-1], 2) if not ema_21.dropna().empty else 0,
-        'ema_50': round(ema_50.dropna().iloc[-1], 2) if not ema_50.dropna().empty else 0,
+        'ema_9': round(ema9_val, 2),
+        'ema_21': round(ema21_val, 2),
+        'ema_50': round(ema50_val, 2),
+        'ema_200': round(ema200_val, 2),
         'stoch_k': round(stoch_k.dropna().iloc[-1], 2) if not stoch_k.dropna().empty else 50,
         'stoch_d': round(stoch_d.dropna().iloc[-1], 2) if not stoch_d.dropna().empty else 50,
+        'vwap': round(vwap.dropna().iloc[-1], 2) if not vwap.dropna().empty else 0,
+        'nearest_resistance': sr['nearest_resistance'],
+        'nearest_support': sr['nearest_support'],
+        'candle_pattern': candle['pattern'],
+        'candle_bias': candle['bias'],
+        'momentum_dir': momentum['direction'],
+        'momentum_net': momentum['net_move'],
+        'momentum_vol_up': momentum['vol_increasing'],
+        'bullish_candles': momentum['bullish_candles'],
+        'bearish_candles': momentum['bearish_candles'],
+        'ema_trend': ema_trend,
+        'rsi_divergence': rsi_div,
     }
 
     return latest

@@ -93,8 +93,13 @@ def run_signal():
     indicators = calculate_all_indicators(df)
     logger.info(f"   RSI: {indicators['rsi']} | ADX: {indicators['adx']} | "
                 f"ATR: {indicators['atr']} | BB Width: {indicators['bb_width']}")
+    logger.info(f"   EMA Trend: {indicators.get('ema_trend')} | "
+                f"Candle: {indicators.get('candle_pattern')} ({indicators.get('candle_bias')}) | "
+                f"Momentum: {indicators.get('momentum_dir')}")
+    logger.info(f"   S/R: Support={indicators.get('nearest_support')} | "
+                f"Resistance={indicators.get('nearest_resistance')}")
 
-    logger.info("🤖 Menganalisis dengan Gemini AI...")
+    logger.info("🤖 Menganalisis dengan Confluence Engine + Gemini AI...")
     signal_result = generate_signal_with_gemini(indicators, GEMINI_API_KEY)
     if not signal_result:
         logger.error("❌ Gagal generate signal. Skip.")
