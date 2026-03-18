@@ -13,16 +13,21 @@ Cara pakai:
 
 import os
 import sys
+import asyncio
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiogram import Bot, Dispatcher, Router
+from aiogram.types import Message, BotCommand
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
 from price_fetcher import fetch_xauusd_data, get_spread_estimate
 from indicators import calculate_all_indicators
 from signal_generator import generate_signal_with_gemini
 from telegram_sender import send_telegram_message, format_signal_message
-from admin_bot import AdminBot
 
 # Setup logging
 logging.basicConfig(
@@ -36,7 +41,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 # Load environment variables
 load_dotenv()
 
@@ -47,13 +51,15 @@ SIGNAL_INTERVAL = int(os.getenv('SIGNAL_INTERVAL_MINUTES', '15'))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 BOT_NAME = os.getenv('BOT_NAME', 'XAUUSD Scalp Signal')
 
-# Admin IDs (comma-separated Telegram user IDs)
+# Admin IDs
 _admin_raw = os.getenv('ADMIN_IDS', '')
 ADMIN_IDS = [int(x.strip()) for x in _admin_raw.split(',') if x.strip().isdigit()]
 
+# Aiogram router for admin commands
+router = Router()
+
 
 def validate_config():
-    """Validasi semua konfigurasi sudah diisi"""
     errors = []
     if not GEMINI_API_KEY or GEMINI_API_KEY == 'your_gemini_api_key_here':
         errors.append("❌ GEMINI_API_KEY belum diisi di file .env")
@@ -61,39 +67,21 @@ def validate_config():
         errors.append("❌ TELEGRAM_BOT_TOKEN belum diisi di file .env")
     if not TELEGRAM_CHAT_ID or TELEGRAM_CHAT_ID == 'your_chat_id_here':
         errors.append("❌ TELEGRAM_CHAT_ID belum diisi di file .env")
-
     if errors:
-        logger.error("="*50)
-        logger.error("KONFIGURASI BELUM LENGKAP!")
-        logger.error("="*50)
         for err in errors:
             logger.error(err)
-        logger.error("")
-        logger.error("Cara mendapatkan:")
-        logger.error("1. Gemini API Key: https://aistudio.google.com/apikey")
-        logger.error("2. Telegram Bot Token: Chat @BotFather di Telegram")
-        logger.error("3. Chat ID: Chat @userinfobot atau @getidsbot di Telegram")
-        logger.error("="*50)
         return False
     return True
 
 
 def run_signal():
-    """
-    Fungsi utama yang dijalankan setiap interval:
-    1. Ambil data harga XAUUSD
-    2. Hitung indikator teknikal
-    3. Analisis dengan Gemini AI
-    4. Kirim signal ke Telegram
-    """
-    logger.info("="*50)
+    """Generate signal dan kirim ke Telegram (sync)"""
+    logger.info("=" * 50)
     logger.info("🔄 Mulai generate signal XAUUSD...")
-    logger.info("="*50)
+    logger.info("=" * 50)
 
-    # Step 1: Ambil data harga
     logger.info("📡 Mengambil data harga XAUUSD...")
     df = fetch_xauusd_data(timeframe=TIMEFRAME, lookback_days=7)
-
     if df.empty:
         logger.error("❌ Gagal mengambil data harga. Skip signal ini.")
         return
@@ -101,21 +89,17 @@ def run_signal():
     logger.info(f"✅ Data diterima: {len(df)} candle, "
                 f"Harga terakhir: {df['Close'].iloc[-1]:.2f}")
 
-    # Step 2: Hitung indikator teknikal
     logger.info("📊 Menghitung indikator teknikal...")
     indicators = calculate_all_indicators(df)
     logger.info(f"   RSI: {indicators['rsi']} | ADX: {indicators['adx']} | "
                 f"ATR: {indicators['atr']} | BB Width: {indicators['bb_width']}")
 
-    # Step 3: Analisis dengan Gemini AI
     logger.info("🤖 Menganalisis dengan Gemini AI...")
     signal_result = generate_signal_with_gemini(indicators, GEMINI_API_KEY)
-
     if not signal_result:
         logger.error("❌ Gagal generate signal. Skip.")
         return
 
-    # Step 4: Siapkan data signal lengkap
     spread = get_spread_estimate()
     now = datetime.now().strftime("%m-%d-%Y %H:%M:%S")
 
@@ -138,30 +122,95 @@ def run_signal():
         'bot_name': BOT_NAME,
     }
 
-    # Step 5: Format dan kirim ke Telegram
     message = format_signal_message(signal_data)
 
-    logger.info(f"\n{'='*50}")
-    logger.info(f"📣 SIGNAL: {signal_result['signal']}")
-    logger.info(f"💰 Price: {indicators['price']:.2f}")
-    logger.info(f"🛑 SL: {signal_result['stop_loss']}")
-    logger.info(f"🎯 TP1: {signal_result['tp1']} | TP2: {signal_result['tp2']} | TP3: {signal_result['tp3']}")
-    logger.info(f"📈 Prob Up: {signal_result['prob_up']}% | Down: {signal_result['prob_down']}%")
-    logger.info(f"{'='*50}")
+    logger.info(f"📣 SIGNAL: {signal_result['signal']} | "
+                f"Price: {indicators['price']:.2f} | "
+                f"SL: {signal_result['stop_loss']} | "
+                f"TP1: {signal_result['tp1']}")
 
     success = send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message)
     if success:
         logger.info("✅ Signal berhasil dikirim ke Telegram!")
     else:
         logger.error("❌ Gagal mengirim signal ke Telegram")
-        # Print message ke console sebagai backup
-        logger.info(f"\n{message}")
 
     logger.info(f"⏰ Signal berikutnya dalam {SIGNAL_INTERVAL} menit\n")
 
 
-def main():
-    """Entry point utama"""
+# ==================== ADMIN BOT COMMANDS ====================
+
+def _is_admin(user_id: int) -> bool:
+    result = user_id in ADMIN_IDS
+    logger.info(f"🔍 Admin check: user={user_id}, admins={ADMIN_IDS}, ok={result}")
+    return result
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message):
+    if not _is_admin(message.from_user.id):
+        await message.answer("⛔ Kamu bukan admin bot ini.")
+        return
+    await message.answer(
+        f"👋 Halo <b>{message.from_user.first_name}</b>!\n\n"
+        "🤖 <b>XAUUSD Scalp Signal Bot - Admin Panel</b>\n"
+        "<code>=====================================</code>\n\n"
+        "📋 <b>Commands:</b>\n"
+        "/signal - 🚀 Generate & kirim signal sekarang\n"
+        "/status - 📊 Cek status bot\n"
+        "/help - ❓ Bantuan\n"
+    )
+
+
+@router.message(Command("signal"))
+async def cmd_signal(message: Message):
+    if not _is_admin(message.from_user.id):
+        await message.answer("⛔ Kamu bukan admin bot ini.")
+        return
+    await message.answer("🔄 <b>Generating signal...</b>\nMohon tunggu...")
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, run_signal)
+        await message.answer("✅ Signal berhasil dikirim ke channel!")
+    except Exception as e:
+        logger.error(f"Error manual signal: {e}")
+        await message.answer(f"❌ Error: {e}")
+
+
+@router.message(Command("status"))
+async def cmd_status(message: Message):
+    if not _is_admin(message.from_user.id):
+        await message.answer("⛔ Kamu bukan admin bot ini.")
+        return
+    await message.answer(
+        "📊 <b>Bot Status</b>\n"
+        "<code>====================</code>\n\n"
+        f"🟢 <b>Status:</b> Running\n"
+        f"📛 <b>Bot Name:</b> {BOT_NAME}\n"
+        f"⏱️ <b>Interval:</b> {SIGNAL_INTERVAL} menit\n"
+        f"📈 <b>Timeframe:</b> {TIMEFRAME}\n\n"
+        "💡 Kirim /signal untuk generate signal manual"
+    )
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    if not _is_admin(message.from_user.id):
+        await message.answer("⛔ Kamu bukan admin bot ini.")
+        return
+    await message.answer(
+        "❓ <b>Help - Admin Commands</b>\n"
+        "<code>==========================</code>\n\n"
+        "/signal - Generate & kirim signal sekarang\n"
+        "/status - Lihat status bot\n"
+        "/help - Tampilkan pesan ini\n\n"
+        "📌 Hanya admin yang bisa akses command ini"
+    )
+
+
+# ==================== MAIN ====================
+
+async def main():
     print("""
 ╔══════════════════════════════════════════════════╗
 ║       XAUUSD SCALP SIGNAL BOT                   ║
@@ -169,7 +218,6 @@ def main():
 ╚══════════════════════════════════════════════════╝
     """)
 
-    # Validasi konfigurasi
     if not validate_config():
         sys.exit(1)
 
@@ -177,52 +225,49 @@ def main():
     logger.info(f"⚙️  Interval: setiap {SIGNAL_INTERVAL} menit")
     logger.info(f"⚙️  Bot Name: {BOT_NAME}")
     logger.info(f"⚙️  Admin IDs: {ADMIN_IDS}")
-    logger.info("")
 
-    # Start Admin Bot (Telegram command handler)
-    if ADMIN_IDS:
-        admin_config = {
-            'interval': SIGNAL_INTERVAL,
-            'timeframe': TIMEFRAME,
-            'bot_name': BOT_NAME,
-        }
-        admin_bot = AdminBot(
-            bot_token=TELEGRAM_BOT_TOKEN,
-            admin_ids=ADMIN_IDS,
-            signal_callback=run_signal,
-            config=admin_config,
-        )
-        admin_bot.start()
-        logger.info("🤖 Admin bot aktif! Kirim /signal ke bot untuk trigger manual")
-    else:
-        logger.warning("⚠️  ADMIN_IDS belum diisi di .env - admin bot tidak aktif")
-        logger.warning("   Tambahkan ADMIN_IDS=your_telegram_user_id di .env")
+    # Setup aiogram bot + dispatcher
+    bot = Bot(
+        token=TELEGRAM_BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+    dp = Dispatcher()
+    dp.include_router(router)
 
-    # Jalankan signal pertama langsung
-    logger.info("🚀 Menjalankan signal pertama...")
-    run_signal()
+    # Set bot commands
+    await bot.set_my_commands([
+        BotCommand(command="signal", description="🚀 Generate & kirim signal sekarang"),
+        BotCommand(command="status", description="📊 Cek status bot"),
+        BotCommand(command="help", description="❓ Bantuan"),
+    ])
 
-    # Schedule signal berikutnya
-    scheduler = BlockingScheduler()
+    # Setup async scheduler
+    scheduler = AsyncIOScheduler()
     scheduler.add_job(
-        run_signal,
+        lambda: run_signal(),
         'interval',
         minutes=SIGNAL_INTERVAL,
         id='xauusd_signal_job',
         max_instances=1,
-        misfire_grace_time=60
+        misfire_grace_time=60,
     )
 
-    logger.info(f"📅 Scheduler aktif - signal setiap {SIGNAL_INTERVAL} menit")
-    logger.info("   Tekan Ctrl+C untuk berhenti")
-    logger.info("   Atau kirim /signal di Telegram untuk trigger manual\n")
+    # Jalankan signal pertama di background
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, run_signal)
 
+    # Start scheduler
+    scheduler.start()
+    logger.info(f"📅 Scheduler aktif - signal setiap {SIGNAL_INTERVAL} menit")
+    logger.info("🤖 Admin bot aktif! Kirim /signal ke bot untuk trigger manual")
+
+    # Start polling (ini yang jalan terus)
     try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("\n🛑 Bot dihentikan oleh user")
+        await dp.start_polling(bot, skip_updates=True)
+    finally:
         scheduler.shutdown()
+        await bot.session.close()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
