@@ -1,6 +1,7 @@
 """
 Price Data Fetcher untuk XAUUSD
-Mengambil data harga SPOT real-time dari berbagai sumber
+Mengambil data harga real-time dari Yahoo Finance (GC=F)
+dengan koreksi ke harga spot menggunakan live price.
 """
 
 import logging
@@ -12,27 +13,46 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 
-def _fetch_spot_price_metals_live() -> float:
-    """Ambil harga spot gold real-time dari metals.live (gratis, tanpa API key)"""
+def _get_live_price_gcf() -> float:
+    """
+    Ambil LIVE price GC=F dari Yahoo Finance fast_info.
+    Ini lebih real-time daripada candle terakhir dari yf.download().
+    """
     try:
-        resp = requests.get("https://api.metals.live/v1/spot", timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        for item in data:
-            if item.get("gold"):
-                price = float(item["gold"])
-                if price > 1000:
-                    return price
-        return 0.0
+        ticker = yf.Ticker("GC=F")
+        fi = ticker.fast_info
+        price = fi.get("lastPrice", 0) or fi.get("regularMarketPrice", 0)
+        if price and price > 1000:
+            return float(price)
     except Exception as e:
-        logger.warning(f"metals.live error: {e}")
-        return 0.0
+        logger.warning(f"fast_info error: {e}")
+
+    # Fallback: Yahoo Chart API langsung
+    try:
+        resp = requests.get(
+            "https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
+            params={"interval": "1m", "range": "1d"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        data = resp.json()
+        price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
+        if price and price > 1000:
+            return float(price)
+    except Exception as e:
+        logger.warning(f"Yahoo chart API error: {e}")
+
+    return 0.0
 
 
 def fetch_xauusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.DataFrame:
     """
-    Ambil data XAUUSD dari Yahoo Finance.
-    Ticker: GC=F (Gold Futures) sebagai proxy XAUUSD.
+    Ambil data candle XAUUSD dari GC=F.
+    Candle terakhir mungkin sudah stale (beda jam), jadi di-adjust
+    ke live price supaya harga yang ditampilkan di sinyal akurat.
+
+    Indikator teknikal (RSI, ADX, ATR, BB, MACD) tidak terpengaruh shifting
+    karena dihitung dari perubahan relatif, bukan harga absolut.
     """
     interval_map = {
         '1m': ('1m', 1),
@@ -45,115 +65,75 @@ def fetch_xauusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.Data
     interval, max_days = interval_map.get(timeframe, ('15m', 30))
     days = min(lookback_days, max_days)
 
-    # Prioritaskan XAUUSD=X (spot) daripada GC=F (futures, harga lebih tinggi)
-    tickers_to_try = ["XAUUSD=X", "GC=F"]
+    try:
+        logger.info("📡 Mengambil candle data dari GC=F...")
+        df = yf.download(
+            "GC=F",
+            period=f"{days}d",
+            interval=interval,
+            progress=False,
+            auto_adjust=True,
+        )
 
-    for symbol in tickers_to_try:
-        try:
-            logger.info(f"📡 Mencoba ambil data dari {symbol}...")
-            df = yf.download(
-                symbol,
-                period=f"{days}d",
-                interval=interval,
-                progress=False,
-                auto_adjust=True,
-            )
+        if df is None or df.empty:
+            logger.error("❌ GC=F: data kosong")
+            return pd.DataFrame()
 
-            if df is not None and not df.empty:
-                # Handle multi-level columns dari yf.download
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
+        # Handle multi-level columns
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-                df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-                df.dropna(inplace=True)
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+        df.dropna(inplace=True)
 
-                if not df.empty:
-                    last_price = float(df['Close'].iloc[-1])
+        if df.empty:
+            logger.error("❌ GC=F: data kosong setelah dropna")
+            return pd.DataFrame()
 
-                    # Jika pakai GC=F (futures), adjust ke spot price
-                    if symbol == "GC=F":
-                        spot = _fetch_spot_price_metals_live()
-                        if spot > 0:
-                            diff = last_price - spot
-                            if abs(diff) > 5:  # Ada selisih signifikan
-                                logger.info(f"🔧 Adjusting GC=F ke spot: futures={last_price:.2f}, spot={spot:.2f}, diff={diff:.2f}")
-                                df['Open'] = df['Open'] - diff
-                                df['High'] = df['High'] - diff
-                                df['Low'] = df['Low'] - diff
-                                df['Close'] = df['Close'] - diff
-                                last_price = float(df['Close'].iloc[-1])
+        last_candle_close = float(df['Close'].iloc[-1])
+        logger.info(f"📊 GC=F candle terakhir: {last_candle_close:.2f} ({df.index[-1]})")
 
-                    logger.info(f"✅ {symbol}: {len(df)} candle, "
-                                f"harga terakhir: {last_price:.2f}, "
-                                f"waktu: {df.index[-1]}")
-                    return df
+        # Ambil LIVE price untuk mengkoreksi candle yang mungkin stale
+        live_price = _get_live_price_gcf()
+        if live_price > 0:
+            diff = last_candle_close - live_price
+            if abs(diff) > 1:
+                logger.info(f"🔧 Adjusting candle ke live price: "
+                            f"candle={last_candle_close:.2f}, live={live_price:.2f}, diff={diff:.2f}")
+                df['Open'] = df['Open'] - diff
+                df['High'] = df['High'] - diff
+                df['Low'] = df['Low'] - diff
+                df['Close'] = df['Close'] - diff
 
-            logger.warning(f"⚠️ {symbol} kosong, coba ticker lain...")
-        except Exception as e:
-            logger.warning(f"⚠️ {symbol} error: {e}")
-            continue
+        final_price = float(df['Close'].iloc[-1])
+        logger.info(f"✅ Data siap: {len(df)} candle, harga: {final_price:.2f}")
+        return df
 
-    logger.error("❌ Semua ticker gagal. Tidak bisa ambil data harga XAUUSD")
-    return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"❌ GC=F error: {e}")
+        return pd.DataFrame()
 
 
 def get_current_price() -> float:
-    """Ambil harga SPOT XAUUSD terkini dari berbagai sumber"""
-
-    # 1. Coba metals.live API dulu (spot price paling akurat)
-    spot = _fetch_spot_price_metals_live()
-    if spot > 0:
-        logger.info(f"💰 Harga spot dari metals.live: {spot:.2f}")
-        return spot
-
-    # 2. Fallback ke XAUUSD=X (spot) dari Yahoo Finance
-    try:
-        df = yf.download("XAUUSD=X", period="1d", interval="1m", progress=False)
-        if df is not None and not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            price = float(df['Close'].iloc[-1])
-            logger.info(f"💰 Harga spot dari XAUUSD=X: {price:.2f}")
-            return price
-    except Exception as e:
-        logger.warning(f"XAUUSD=X error: {e}")
-
-    # 3. Fallback terakhir ke GC=F (futures)
-    try:
-        df = yf.download("GC=F", period="1d", interval="1m", progress=False)
-        if df is not None and not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            price = float(df['Close'].iloc[-1])
-            logger.warning(f"⚠️ Pakai harga futures GC=F: {price:.2f} (mungkin lebih tinggi dari spot)")
-            return price
-    except Exception as e:
-        logger.warning(f"GC=F error: {e}")
-
+    """Ambil harga XAUUSD terkini (live)"""
+    price = _get_live_price_gcf()
+    if price > 0:
+        logger.info(f"💰 Live price: {price:.2f}")
+        return price
     return 0.0
 
 
 def get_spread_estimate() -> float:
-    """Estimasi spread dari bid-ask real-time"""
+    """Estimasi spread dari bid-ask"""
     try:
         ticker = yf.Ticker("GC=F")
-        # fast_info lebih cepat dan up-to-date daripada .info
-        bid = getattr(ticker, 'fast_info', {}).get('bid', 0)
-        ask = getattr(ticker, 'fast_info', {}).get('ask', 0)
-        if bid and ask and bid > 0 and ask > 0:
-            spread = round(ask - bid, 2)
-            if 0.01 < spread < 5.0:  # Sanity check
-                return spread
-
-        # Fallback ke .info
-        info = ticker.info
-        bid = info.get('bid', 0)
-        ask = info.get('ask', 0)
-        if bid and ask and bid > 0 and ask > 0:
+        fi = ticker.fast_info
+        bid = fi.get("bid", 0)
+        ask = fi.get("ask", 0)
+        if bid and ask and bid > 1000 and ask > 1000:
             spread = round(ask - bid, 2)
             if 0.01 < spread < 5.0:
                 return spread
-
-        return 0.45
     except Exception:
-        return 0.45
+        pass
+    return 0.45
