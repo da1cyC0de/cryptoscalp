@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+# Gemini key is loaded internally by signal_generator
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 SIGNAL_INTERVAL = int(os.getenv('SIGNAL_INTERVAL_MINUTES', '15'))
@@ -61,7 +61,7 @@ router = Router()
 
 def validate_config():
     errors = []
-    if not GEMINI_API_KEY or GEMINI_API_KEY == 'your_gemini_api_key_here':
+    if not os.getenv('GEMINI_API_KEY', ''):
         errors.append("❌ GEMINI_API_KEY belum diisi di file .env")
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == 'your_telegram_bot_token_here':
         errors.append("❌ TELEGRAM_BOT_TOKEN belum diisi di file .env")
@@ -99,8 +99,8 @@ def run_signal():
     logger.info(f"   S/R: Support={indicators.get('nearest_support')} | "
                 f"Resistance={indicators.get('nearest_resistance')}")
 
-    logger.info("🤖 Menganalisis dengan Confluence Engine + Gemini AI...")
-    signal_result = generate_signal_with_gemini(indicators, GEMINI_API_KEY)
+    logger.info("🤖 Menganalisis dengan Gemini AI...")
+    signal_result = generate_signal_with_gemini(indicators)
     if not signal_result:
         logger.error("❌ Gagal generate signal. Skip.")
         return

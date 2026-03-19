@@ -1,12 +1,14 @@
 """
 XAUUSD Scalp Signal Generator — AI-Powered
 Gemini AI menganalisis semua data teknikal dan memutuskan BUY/SELL.
-Technical indicators sebagai input data, AI sebagai trader yang menganalisis.
+Model cascade: 2.5-flash-lite → 2.5-flash → 3-flash-preview → 3.1-flash-lite-preview
+Kalau satu model quota habis, otomatis coba model berikutnya.
 """
 
 import json
 import time
 import logging
+import os
 from google import genai
 from google.genai import types
 
@@ -66,14 +68,13 @@ def _calculate_smart_levels(indicators: dict, signal_type: str) -> dict:
 
 
 # ============================================================
-# GEMINI AI — THE TRADER
+# GEMINI AI — THE TRADER (Multi-model cascade)
 # ============================================================
 
-def _ask_gemini_trader(indicators: dict, api_key: str) -> dict:
+def _ask_ai_trader(indicators: dict, api_key: str) -> dict:
     """
     Kirim semua data teknikal ke Gemini AI.
-    Gemini menganalisis seperti trader pro dan return JSON: signal, confidence, reasoning.
-    Retry dengan delay jika rate limited.
+    Cascade through 4 models — kalau satu quota habis, otomatis coba model berikutnya.
     """
 
     prompt = f"""Kamu adalah trader XAUUSD profesional. Analisis data ini dan putuskan BUY atau SELL.
@@ -112,70 +113,72 @@ RSI Divergence: {indicators.get('rsi_divergence', 'none')}
 Output HANYA JSON (tanpa markdown):
 {{"signal":"BUY atau SELL","confidence":30-90,"prob_up":10-90,"prob_down":10-90,"reasoning":"2-3 kalimat Indonesia"}}"""
 
+    models_to_try = [
+        'gemini-2.5-flash-lite',    # Tercepat, 30 RPM free
+        'gemini-2.5-flash',          # Lebih pintar, 15 RPM free
+        'gemini-3-flash-preview',    # Newest flash
+        'gemini-3.1-flash-lite-preview',  # Newest lite
+    ]
+
     client = genai.Client(api_key=api_key)
-    models_to_try = ['gemini-2.0-flash-lite', 'gemini-2.0-flash']
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    max_output_tokens=300,
+                ),
+            )
+            text = response.text.strip()
 
-    for attempt in range(3):  # Max 3 attempts with retry
-        for model_name in models_to_try:
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.3,
-                        max_output_tokens=300,
-                    ),
-                )
-                text = response.text.strip()
+            # Clean markdown code blocks
+            if text.startswith('```'):
+                text = text.split('\n', 1)[1] if '\n' in text else text[3:]
+            if text.endswith('```'):
+                text = text[:-3].strip()
+            if text.startswith('json'):
+                text = text[4:].strip()
 
-                # Clean markdown code blocks
-                if text.startswith('```'):
-                    text = text.split('\n', 1)[1] if '\n' in text else text[3:]
-                if text.endswith('```'):
-                    text = text[:-3].strip()
-                if text.startswith('json'):
-                    text = text[4:].strip()
+            result = json.loads(text)
 
-                result = json.loads(text)
-
-                signal = result.get('signal', '').upper()
-                if signal not in ('BUY', 'SELL'):
-                    logger.warning(f"⚠️ Gemini returned invalid signal: {signal}")
-                    continue
-
-                confidence = max(30, min(90, int(result.get('confidence', 50))))
-                prob_up = max(10, min(90, float(result.get('prob_up', 50))))
-                prob_down = max(10, min(90, float(result.get('prob_down', 50))))
-                reasoning = result.get('reasoning', '')
-
-                logger.info(f"🤖 Gemini ({model_name}): {signal} | Confidence: {confidence}%")
-                logger.info(f"   Reasoning: {reasoning}")
-
-                return {
-                    'signal': signal,
-                    'confidence': confidence,
-                    'prob_up': prob_up,
-                    'prob_down': prob_down,
-                    'reasoning': reasoning,
-                }
-
-            except json.JSONDecodeError as e:
-                logger.warning(f"⚠️ Gemini {model_name} JSON parse error: {e}")
-                logger.warning(f"   Raw response: {text[:200]}")
-                continue
-            except Exception as e:
-                err_str = str(e)
-                if '429' in err_str or 'RESOURCE_EXHAUSTED' in err_str:
-                    logger.warning(f"⚠️ Gemini {model_name} rate limited, retry in 60s...")
-                    if attempt < 2:
-                        time.sleep(60)
-                        break  # break inner loop to retry
-                else:
-                    logger.warning(f"⚠️ Gemini {model_name} error: {e}")
+            signal = result.get('signal', '').upper()
+            if signal not in ('BUY', 'SELL'):
+                logger.warning(f"⚠️ Gemini {model_name} returned invalid signal: {signal}")
                 continue
 
-    # Fallback: trend-following analysis jika Gemini gagal
-    logger.warning("⚠️ Gemini gagal semua attempt, menggunakan fallback teknikal")
+            confidence = max(30, min(90, int(result.get('confidence', 50))))
+            prob_up = max(10, min(90, float(result.get('prob_up', 50))))
+            prob_down = max(10, min(90, float(result.get('prob_down', 50))))
+            reasoning = result.get('reasoning', '')
+
+            logger.info(f"🤖 Gemini ({model_name}): {signal} | Confidence: {confidence}%")
+            logger.info(f"   Reasoning: {reasoning}")
+
+            return {
+                'signal': signal,
+                'confidence': confidence,
+                'prob_up': prob_up,
+                'prob_down': prob_down,
+                'reasoning': reasoning,
+            }
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"⚠️ Gemini {model_name} JSON parse error: {e}")
+            logger.warning(f"   Raw response: {text[:200]}")
+            continue
+        except Exception as e:
+            err_str = str(e)
+            if '429' in err_str or 'RESOURCE_EXHAUSTED' in err_str:
+                logger.warning(f"⚠️ Gemini {model_name} quota habis, coba model berikutnya...")
+                continue  # Try next model
+            else:
+                logger.warning(f"⚠️ Gemini {model_name} error: {e}")
+            continue
+
+    # Fallback jika semua model Gemini gagal
+    logger.warning("⚠️ Gemini gagal semua model, menggunakan fallback teknikal")
     return _fallback_analysis(indicators)
 
 
@@ -259,14 +262,20 @@ def _fallback_analysis(indicators: dict) -> dict:
 # MAIN SIGNAL GENERATION
 # ============================================================
 
-def generate_signal_with_gemini(indicators: dict, api_key: str) -> dict:
+def generate_signal_with_gemini(indicators: dict, api_key: str = None) -> dict:
     """
     Generate signal XAUUSD — Gemini AI sebagai trader yang menganalisis market.
+    Cascade 4 model: kalau satu quota habis, otomatis coba model berikutnya.
     """
     logger.info("🤖 Mengirim data ke Gemini AI untuk analisis...")
 
-    # Gemini AI analyzes and decides
-    ai_result = _ask_gemini_trader(indicators, api_key)
+    # Load API key
+    api_key = os.getenv('GEMINI_API_KEY', '')
+    if not api_key:
+        logger.warning("⚠️ Tidak ada GEMINI_API_KEY, menggunakan fallback")
+        ai_result = _fallback_analysis(indicators)
+    else:
+        ai_result = _ask_ai_trader(indicators, api_key)
 
     signal_type = ai_result['signal']
     confidence = ai_result['confidence']
