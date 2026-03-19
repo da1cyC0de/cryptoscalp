@@ -17,7 +17,6 @@ import asyncio
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Message, BotCommand
 from aiogram.filters import Command
@@ -140,8 +139,6 @@ def run_signal():
     else:
         logger.error("❌ Gagal mengirim signal ke Telegram")
 
-    logger.info(f"⏰ Signal berikutnya dalam {SIGNAL_INTERVAL} menit\n")
-
 
 # ==================== ADMIN BOT COMMANDS ====================
 
@@ -192,8 +189,8 @@ async def cmd_status(message: Message):
         "<code>====================</code>\n\n"
         f"🟢 <b>Status:</b> Running\n"
         f"📛 <b>Bot Name:</b> {BOT_NAME}\n"
-        f"⏱️ <b>Interval:</b> {SIGNAL_INTERVAL} menit\n"
-        f"📈 <b>Timeframe:</b> {TIMEFRAME}\n\n"
+        f"📈 <b>Timeframe:</b> {TIMEFRAME}\n"
+        f"🕹️ <b>Mode:</b> Manual (/signal)\n\n"
         "💡 Kirim /signal untuk generate signal manual"
     )
 
@@ -227,9 +224,9 @@ async def main():
         sys.exit(1)
 
     logger.info(f"⚙️  Timeframe: {TIMEFRAME}")
-    logger.info(f"⚙️  Interval: setiap {SIGNAL_INTERVAL} menit")
     logger.info(f"⚙️  Bot Name: {BOT_NAME}")
     logger.info(f"⚙️  Admin IDs: {ADMIN_IDS}")
+    logger.info("⚙️  Mode: Manual (/signal command only)")
 
     # Setup aiogram bot + dispatcher
     bot = Bot(
@@ -250,31 +247,13 @@ async def main():
         BotCommand(command="help", description="❓ Bantuan"),
     ])
 
-    # Setup async scheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        lambda: run_signal(),
-        'interval',
-        minutes=SIGNAL_INTERVAL,
-        id='xauusd_signal_job',
-        max_instances=1,
-        misfire_grace_time=60,
-    )
-
-    # Jalankan signal pertama di background
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, run_signal)
-
-    # Start scheduler
-    scheduler.start()
-    logger.info(f"📅 Scheduler aktif - signal setiap {SIGNAL_INTERVAL} menit")
-    logger.info("🤖 Admin bot aktif! Kirim /signal ke bot untuk trigger manual")
+    # Bot siap — hanya via /signal command
+    logger.info("🤖 Bot aktif! Kirim /signal untuk generate signal")
 
     # Start polling (ini yang jalan terus)
     try:
         await dp.start_polling(bot, skip_updates=True)
     finally:
-        scheduler.shutdown()
         await bot.session.close()
 
 
