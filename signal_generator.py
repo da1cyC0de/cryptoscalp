@@ -321,5 +321,5 @@ def generate_signal(indicators: dict, symbol: str = 'XAUUSD') -> dict:
 
 
 # Backward compatibility
-def generate_signal_with_gemini(indicators: dict, api_key: str = None) -> dict:
-    return generate_signal(indicators, 'XAUUSD')
+def generate_signal_with_gemini(indicators: dict, api_key: str = None, symbol: str = 'XAUUSD') -> dict:
+    return generate_signal(indicators, symbol)
