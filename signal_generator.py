@@ -1,8 +1,8 @@
 """
-XAUUSD Scalp Signal Generator — AI-Powered
+Multi-Pair Scalp Signal Generator — AI-Powered
 Gemini AI menganalisis semua data teknikal dan memutuskan BUY/SELL.
+Support: XAUUSD, BTCUSD
 Model cascade: 2.5-flash-lite → 2.5-flash → 3-flash-preview → 3.1-flash-lite-preview
-Kalau satu model quota habis, otomatis coba model berikutnya.
 """
 
 import json
@@ -15,14 +15,22 @@ from google.genai import types
 logger = logging.getLogger(__name__)
 
 
-def _calculate_smart_levels(indicators: dict, signal_type: str) -> dict:
+def _calculate_smart_levels(indicators: dict, signal_type: str, symbol: str = 'XAUUSD') -> dict:
     """
     SL/TP untuk SCALPING — ketat dan realistis.
+    BTC: lebih lebar karena volatilitas lebih tinggi.
     """
     price = indicators['price']
     atr = indicators['atr']
-    nearest_support = indicators.get('nearest_support', price - 15)
-    nearest_resistance = indicators.get('nearest_resistance', price + 15)
+
+    # Default S/R fallback berdasarkan symbol
+    if symbol == 'BTCUSD':
+        sr_fallback = price * 0.005  # 0.5% dari harga
+    else:
+        sr_fallback = 15
+
+    nearest_support = indicators.get('nearest_support', price - sr_fallback)
+    nearest_resistance = indicators.get('nearest_resistance', price + sr_fallback)
 
     if signal_type == 'BUY':
         sl_by_sr = nearest_support - (atr * 0.2)
@@ -71,15 +79,19 @@ def _calculate_smart_levels(indicators: dict, signal_type: str) -> dict:
 # GEMINI AI — THE TRADER (Multi-model cascade)
 # ============================================================
 
-def _ask_ai_trader(indicators: dict, api_key: str) -> dict:
+def _ask_ai_trader(indicators: dict, api_key: str, symbol: str = 'XAUUSD') -> dict:
     """
     Kirim semua data teknikal ke Gemini AI.
     Cascade through 4 models — kalau satu quota habis, otomatis coba model berikutnya.
     """
 
-    prompt = f"""Kamu adalah trader XAUUSD profesional. Analisis data ini dan putuskan BUY atau SELL.
+    # Decimal places berdasarkan symbol
+    dp = 2 if symbol == 'XAUUSD' else 2
+    symbol_name = 'XAUUSD (Gold)' if symbol == 'XAUUSD' else 'BTCUSD (Bitcoin)'
 
-=== HARGA ===
+    prompt = f"""Kamu adalah trader {symbol_name} profesional. Analisis data ini dan putuskan BUY atau SELL.
+
+=== {symbol} HARGA ===
 Price: {indicators['price']:.2f} | High: {indicators['high']:.2f} | Low: {indicators['low']:.2f}
 
 === TREND (PALING PENTING — ikuti trend!) ===
@@ -173,6 +185,9 @@ Output HANYA JSON (tanpa markdown):
             if '429' in err_str or 'RESOURCE_EXHAUSTED' in err_str:
                 logger.warning(f"⚠️ Gemini {model_name} quota habis, coba model berikutnya...")
                 continue  # Try next model
+            elif '403' in err_str or 'PERMISSION_DENIED' in err_str:
+                logger.warning(f"⚠️ Gemini API key ditolak (leaked/invalid), skip semua model")
+                break  # No point trying other models with same key
             else:
                 logger.warning(f"⚠️ Gemini {model_name} error: {e}")
             continue
@@ -262,12 +277,12 @@ def _fallback_analysis(indicators: dict) -> dict:
 # MAIN SIGNAL GENERATION
 # ============================================================
 
-def generate_signal_with_gemini(indicators: dict, api_key: str = None) -> dict:
+def generate_signal(indicators: dict, symbol: str = 'XAUUSD') -> dict:
     """
-    Generate signal XAUUSD — Gemini AI sebagai trader yang menganalisis market.
-    Cascade 4 model: kalau satu quota habis, otomatis coba model berikutnya.
+    Generate signal — Gemini AI sebagai trader yang menganalisis market.
+    Support: XAUUSD, BTCUSD
     """
-    logger.info("🤖 Mengirim data ke Gemini AI untuk analisis...")
+    logger.info(f"🤖 Mengirim data {symbol} ke Gemini AI untuk analisis...")
 
     # Load API key
     api_key = os.getenv('GEMINI_API_KEY', '')
@@ -275,7 +290,7 @@ def generate_signal_with_gemini(indicators: dict, api_key: str = None) -> dict:
         logger.warning("⚠️ Tidak ada GEMINI_API_KEY, menggunakan fallback")
         ai_result = _fallback_analysis(indicators)
     else:
-        ai_result = _ask_ai_trader(indicators, api_key)
+        ai_result = _ask_ai_trader(indicators, api_key, symbol)
 
     signal_type = ai_result['signal']
     confidence = ai_result['confidence']
@@ -284,7 +299,7 @@ def generate_signal_with_gemini(indicators: dict, api_key: str = None) -> dict:
     reasoning = ai_result['reasoning']
 
     # Calculate SL/TP levels
-    levels = _calculate_smart_levels(indicators, signal_type)
+    levels = _calculate_smart_levels(indicators, signal_type, symbol)
 
     result = {
         'signal': signal_type,
@@ -299,7 +314,12 @@ def generate_signal_with_gemini(indicators: dict, api_key: str = None) -> dict:
         'reasoning': reasoning,
     }
 
-    logger.info(f"✅ Signal: {signal_type} | Confidence: {confidence}% | "
+    logger.info(f"✅ {symbol} Signal: {signal_type} | Confidence: {confidence}% | "
                 f"Risk: {levels['risk']} | R:R = 1:{round(abs(levels['tp2'] - indicators['price']) / max(levels['risk'], 0.01), 1)}")
 
     return result
+
+
+# Backward compatibility
+def generate_signal_with_gemini(indicators: dict, api_key: str = None) -> dict:
+    return generate_signal(indicators, 'XAUUSD')

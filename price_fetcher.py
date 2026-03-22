@@ -1,7 +1,7 @@
 """
-Price Data Fetcher untuk XAUUSD
-Mengambil harga spot dari TradingView (TVC:GOLD) dan
-candle data dari Yahoo Finance (GC=F) yang di-adjust ke spot.
+Price Data Fetcher untuk XAUUSD dan BTCUSD
+XAUUSD: TradingView spot (TVC:GOLD) + Yahoo Finance candle (GC=F)
+BTCUSD: TradingView spot (BITSTAMP:BTCUSD) + Yahoo Finance candle (BTC-USD)
 """
 
 import logging
@@ -167,7 +167,7 @@ def get_current_price() -> float:
 
 
 def get_spread_estimate() -> float:
-    """Estimasi spread dari bid-ask"""
+    """Estimasi spread XAUUSD dari bid-ask"""
     try:
         ticker = yf.Ticker("GC=F")
         fi = ticker.fast_info
@@ -180,3 +180,110 @@ def get_spread_estimate() -> float:
     except Exception:
         pass
     return 0.45
+
+
+# ============================================================
+# BTCUSD PRICE FETCHER
+# ============================================================
+
+def _get_spot_price_btc_tradingview() -> float:
+    """Ambil harga spot BTCUSD dari TradingView Scanner API"""
+    try:
+        payload = {
+            "symbols": {"tickers": ["BITSTAMP:BTCUSD"]},
+            "columns": ["close"]
+        }
+        resp = requests.post(
+            "https://scanner.tradingview.com/crypto/scan",
+            json=payload,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("data") and len(data["data"]) > 0:
+            price = float(data["data"][0]["d"][0])
+            if price > 100:
+                logger.info(f"💰 TradingView spot (BITSTAMP:BTCUSD): {price:.2f}")
+                return price
+    except Exception as e:
+        logger.warning(f"TradingView BTC API error: {e}")
+    return 0.0
+
+
+def fetch_btcusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.DataFrame:
+    """
+    Ambil data candle BTCUSD dari Yahoo Finance (BTC-USD).
+    Adjust ke harga spot TradingView jika ada perbedaan.
+    """
+    interval_map = {
+        '1m': ('1m', 1),
+        '5m': ('5m', 5),
+        '15m': ('15m', 30),
+        '1h': ('1h', 60),
+        '1d': ('1d', 365),
+    }
+
+    interval, max_days = interval_map.get(timeframe, ('15m', 30))
+    days = min(lookback_days, max_days)
+
+    try:
+        logger.info("📡 Mengambil candle data dari BTC-USD...")
+        df = yf.download(
+            "BTC-USD",
+            period=f"{days}d",
+            interval=interval,
+            progress=False,
+            auto_adjust=True,
+        )
+
+        if df is None or df.empty:
+            logger.error("❌ BTC-USD: data kosong")
+            return pd.DataFrame()
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+        df.dropna(inplace=True)
+
+        if df.empty:
+            logger.error("❌ BTC-USD: data kosong setelah dropna")
+            return pd.DataFrame()
+
+        last_candle = float(df['Close'].iloc[-1])
+        spot = _get_spot_price_btc_tradingview()
+
+        if spot > 0:
+            diff = last_candle - spot
+            logger.info(f"📊 BTC candle: {last_candle:.2f}, Spot: {spot:.2f}, Diff: {diff:.2f}")
+            if abs(diff) > 10:
+                logger.info(f"🔧 Adjusting BTC candle ke spot: shift={diff:.2f}")
+                df['Open'] = df['Open'] - diff
+                df['High'] = df['High'] - diff
+                df['Low'] = df['Low'] - diff
+                df['Close'] = df['Close'] - diff
+
+        final_price = float(df['Close'].iloc[-1])
+        logger.info(f"✅ BTC data siap: {len(df)} candle, harga final: {final_price:.2f}")
+        return df
+
+    except Exception as e:
+        logger.error(f"❌ BTC-USD error: {e}")
+        return pd.DataFrame()
+
+
+def get_btc_spread_estimate() -> float:
+    """Estimasi spread BTCUSD"""
+    try:
+        ticker = yf.Ticker("BTC-USD")
+        fi = ticker.fast_info
+        bid = fi.get("bid", 0)
+        ask = fi.get("ask", 0)
+        if bid and ask and bid > 100:
+            spread = round(ask - bid, 2)
+            if 0.01 < spread < 100:
+                return spread
+    except Exception:
+        pass
+    return 5.0
