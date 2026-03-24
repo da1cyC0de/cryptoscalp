@@ -219,10 +219,10 @@ Output HANYA JSON (tanpa markdown/backtick):
 {{"signal":"BUY atau SELL","confidence":30-90,"prob_up":10-90,"prob_down":10-90,"reasoning":"2-3 kalimat alasan Bahasa Indonesia"}}"""
 
     models_to_try = [
-        'gemini-2.5-flash-lite',
-        'gemini-2.5-flash',
-        'gemini-3-flash-preview',
-        'gemini-3.1-flash-lite-preview',
+        'gemini-2.5-flash',              # Paling pintar, paid tier
+        'gemini-2.5-pro',                # Pro model (kalau available)
+        'gemini-3-flash-preview',        # Newest
+        'gemini-2.5-flash-lite',         # Fallback terakhir
     ]
 
     client = genai.Client(api_key=api_key)
