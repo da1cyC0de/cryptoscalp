@@ -211,18 +211,24 @@ def detect_candlestick_patterns(df: pd.DataFrame) -> dict:
 
 
 def calculate_momentum_score(df: pd.DataFrame, lookback: int = 5) -> dict:
-    """Hitung momentum score dari beberapa candle terakhir"""
+    """Hitung momentum score dari beberapa candle terakhir — BODY-WEIGHTED"""
     recent = df.tail(lookback)
     closes = recent['Close'].values
+    opens = recent['Open'].values
 
-    # Consecutive direction
+    # Candle body weighted momentum (bukan cuma arah, tapi UKURAN)
     bullish_count = 0
     bearish_count = 0
-    for i in range(1, len(closes)):
-        if closes[i] > closes[i-1]:
+    bullish_power = 0.0  # Total body size bullish
+    bearish_power = 0.0  # Total body size bearish
+    for i in range(len(closes)):
+        body = closes[i] - opens[i]
+        if body > 0:
             bullish_count += 1
-        elif closes[i] < closes[i-1]:
+            bullish_power += abs(body)
+        elif body < 0:
             bearish_count += 1
+            bearish_power += abs(body)
 
     # Net movement
     net_move = closes[-1] - closes[0]
@@ -231,13 +237,147 @@ def calculate_momentum_score(df: pd.DataFrame, lookback: int = 5) -> dict:
     vols = recent['Volume'].values
     vol_increasing = vols[-1] > np.mean(vols[:-1]) if len(vols) > 1 and np.mean(vols[:-1]) > 0 else False
 
+    # Body dominance: siapa yang menang body-nya
+    total_power = bullish_power + bearish_power
+    if total_power > 0:
+        body_ratio = (bullish_power - bearish_power) / total_power  # -1 to +1
+    else:
+        body_ratio = 0.0
+
     return {
         'bullish_candles': bullish_count,
         'bearish_candles': bearish_count,
+        'bullish_power': round(float(bullish_power), 2),
+        'bearish_power': round(float(bearish_power), 2),
+        'body_ratio': round(float(body_ratio), 3),  # -1 full bear, +1 full bull
         'net_move': round(float(net_move), 2),
         'vol_increasing': vol_increasing,
         'direction': 'bullish' if net_move > 0 else 'bearish' if net_move < 0 else 'flat',
     }
+
+
+def calculate_price_structure(df: pd.DataFrame, lookback: int = 20) -> dict:
+    """
+    Analisis price structure: Higher Highs/Higher Lows vs Lower Highs/Lower Lows.
+    Ini yang PERTAMA KALI dilihat trader saat buka chart.
+    """
+    if len(df) < lookback:
+        return {'structure': 'unknown', 'hh_count': 0, 'll_count': 0, 'lh_count': 0, 'hl_count': 0}
+
+    recent = df.tail(lookback)
+    highs = recent['High'].values
+    lows = recent['Low'].values
+
+    # Detect swing points (mini pivots, setiap 3-5 candle)
+    swing_highs = []
+    swing_lows = []
+    step = 4  # Group every 4 candles
+
+    for i in range(0, len(highs) - step + 1, step):
+        chunk_high = max(highs[i:i + step])
+        chunk_low = min(lows[i:i + step])
+        swing_highs.append(chunk_high)
+        swing_lows.append(chunk_low)
+
+    if len(swing_highs) < 2:
+        return {'structure': 'unknown', 'hh_count': 0, 'll_count': 0, 'lh_count': 0, 'hl_count': 0}
+
+    # Count HH, HL, LH, LL
+    hh = lh = hl = ll = 0
+    for i in range(1, len(swing_highs)):
+        if swing_highs[i] > swing_highs[i - 1]:
+            hh += 1
+        else:
+            lh += 1
+        if swing_lows[i] > swing_lows[i - 1]:
+            hl += 1
+        else:
+            ll += 1
+
+    # Determine structure
+    total = hh + lh
+    if total == 0:
+        structure = 'unknown'
+    elif hh > lh and hl > ll:
+        structure = 'uptrend'       # HH + HL = classic uptrend
+    elif lh > hh and ll > hl:
+        structure = 'downtrend'     # LH + LL = classic downtrend
+    elif lh > hh and hl >= ll:
+        structure = 'distribution'  # LH but HL = topping out
+    elif hh >= lh and ll > hl:
+        structure = 'accumulation'  # HH but LL = bottoming out
+    else:
+        structure = 'ranging'
+
+    return {
+        'structure': structure,
+        'hh_count': hh,
+        'll_count': ll,
+        'lh_count': lh,
+        'hl_count': hl,
+    }
+
+
+def calculate_htf_trend(df_htf: pd.DataFrame) -> dict:
+    """
+    Hitung trend dari higher timeframe (1h/4h).
+    Simplified: EMA9/21 + MACD + recent direction.
+    """
+    if df_htf is None or df_htf.empty or len(df_htf) < 30:
+        return {'htf_trend': 'unknown', 'htf_score': 0}
+
+    close = df_htf['Close']
+
+    # EMA
+    ema9 = calculate_ema(close, 9).iloc[-1]
+    ema21 = calculate_ema(close, 21).iloc[-1]
+    price = close.iloc[-1]
+
+    # MACD
+    macd_line, signal_line, histogram = calculate_macd(close)
+    macd_hist = histogram.dropna().iloc[-1] if not histogram.dropna().empty else 0
+
+    # Last 5 candle direction on HTF
+    last5 = close.tail(5).values
+    htf_net = last5[-1] - last5[0]
+
+    score = 0
+    # EMA positioning (bobot 3)
+    if price > ema9 > ema21:
+        score += 3
+    elif price > ema9:
+        score += 1
+    elif price < ema9 < ema21:
+        score -= 3
+    elif price < ema9:
+        score -= 1
+
+    # MACD (bobot 2)
+    if macd_hist > 0:
+        score += 2
+    elif macd_hist < 0:
+        score -= 2
+
+    # HTF direction (bobot 2)
+    atr = calculate_atr(df_htf['High'], df_htf['Low'], close, 14)
+    atr_val = atr.dropna().iloc[-1] if not atr.dropna().empty else 10
+    if htf_net > atr_val * 0.3:
+        score += 2
+    elif htf_net < -atr_val * 0.3:
+        score -= 2
+
+    if score >= 4:
+        trend = 'BULLISH'
+    elif score >= 2:
+        trend = 'LEAN_BULLISH'
+    elif score <= -4:
+        trend = 'BEARISH'
+    elif score <= -2:
+        trend = 'LEAN_BEARISH'
+    else:
+        trend = 'NEUTRAL'
+
+    return {'htf_trend': trend, 'htf_score': score}
 
 
 def calculate_all_indicators(df: pd.DataFrame) -> dict:
@@ -282,8 +422,11 @@ def calculate_all_indicators(df: pd.DataFrame) -> dict:
     # Candlestick
     candle = detect_candlestick_patterns(df)
 
-    # Momentum
+    # Momentum (body-weighted)
     momentum = calculate_momentum_score(df)
+
+    # Price Structure (HH/HL/LH/LL)
+    price_struct = calculate_price_structure(df)
 
     # Trend determination: EMA alignment
     ema9_val = ema_9.dropna().iloc[-1] if not ema_9.dropna().empty else 0
@@ -347,6 +490,14 @@ def calculate_all_indicators(df: pd.DataFrame) -> dict:
         'momentum_vol_up': momentum['vol_increasing'],
         'bullish_candles': momentum['bullish_candles'],
         'bearish_candles': momentum['bearish_candles'],
+        'body_ratio': momentum['body_ratio'],
+        'bullish_power': momentum['bullish_power'],
+        'bearish_power': momentum['bearish_power'],
+        'price_structure': price_struct['structure'],
+        'hh_count': price_struct['hh_count'],
+        'll_count': price_struct['ll_count'],
+        'lh_count': price_struct['lh_count'],
+        'hl_count': price_struct['hl_count'],
         'ema_trend': ema_trend,
         'rsi_divergence': rsi_div,
     }

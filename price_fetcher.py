@@ -163,6 +163,44 @@ def fetch_xauusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.Data
         return pd.DataFrame()
 
 
+def fetch_higher_timeframe(timeframe_htf: str = "1h", lookback_days: int = 14) -> pd.DataFrame:
+    """
+    Ambil data candle higher timeframe (1h/4h) untuk multi-timeframe analysis.
+    Digunakan untuk menentukan big-picture trend.
+    """
+    interval_map = {
+        '1h': ('1h', 60),
+        '4h': ('1h', 60),  # Yahoo doesn't have 4h, we'll resample
+    }
+    interval, max_days = interval_map.get(timeframe_htf, ('1h', 60))
+    days = min(lookback_days, max_days)
+
+    try:
+        df = yf.download("GC=F", period=f"{days}d", interval=interval, progress=False, auto_adjust=True)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+        df.dropna(inplace=True)
+
+        # Adjust ke spot price
+        spot = _get_spot_price_tradingview()
+        if spot > 0 and not df.empty:
+            shift = float(df['Close'].iloc[-1]) - spot
+            if abs(shift) > 1:
+                df['Open'] -= shift
+                df['High'] -= shift
+                df['Low'] -= shift
+                df['Close'] -= shift
+
+        logger.info(f"📊 HTF data ({timeframe_htf}): {len(df)} candle")
+        return df
+    except Exception as e:
+        logger.warning(f"⚠️ HTF fetch error: {e}")
+        return pd.DataFrame()
+
+
 def get_current_price() -> float:
     """Ambil harga spot XAUUSD terkini"""
     # 1. TradingView (spot, paling akurat)

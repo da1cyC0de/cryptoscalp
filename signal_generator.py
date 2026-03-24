@@ -1,11 +1,13 @@
 """
-XAUUSD Scalp Signal Generator — AI-Powered (v2 - High Accuracy)
-================================================================
-1. Baca market dulu (trend analysis) sebelum kirim signal
-2. Gemini AI sebagai konfirmasi, BUKAN decision maker utama
-3. Trend validation: TIDAK BOLEH BUY di downtrend, TIDAK BOLEH SELL di uptrend
-4. SL ketat berdasarkan S/R + ATR kecil
-5. Model cascade: 2.5-flash-lite → 2.5-flash → 3-flash-preview → 3.1-flash-lite-preview
+XAUUSD Scalp Signal Generator — AI-Powered (v3 - Pro Chart Reading)
+====================================================================
+SEPERTI TRADER BACA CHART:
+1. Lihat struktur harga dulu (HH/HL atau LH/LL) — ini trend UTAMA
+2. Cek higher timeframe (1H) — jangan trade melawan trend besar
+3. Baca candle terakhir (body size, bukan cuma arah) — momentum REAL
+4. Konfirmasi dengan indikator (MACD, EMA, ADX)
+5. Gemini AI sebagai second opinion, BUKAN decision maker
+6. STRICT validation: signal HARUS sejalan dengan semua konfirmasi
 """
 
 import json
@@ -18,16 +20,24 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# STEP 1: BACA MARKET — Tentukan trend SEBELUM signal
+# STEP 1: BACA CHART SEPERTI TRADER PRO
 # ============================================================
 
-def _read_market_trend(indicators: dict) -> dict:
+def _read_market_trend(indicators: dict, htf_data: dict = None) -> dict:
     """
-    Baca kondisi market untuk SCALPING.
-    Prioritas: recent candle direction > MACD > EMA.
-    Kalau 5 candle terakhir turun semua, itu BEARISH meskipun EMA masih bullish.
+    Baca kondisi market SEPERTI TRADER BUKA CHART.
+    
+    Urutan trader baca chart:
+    1. Price Structure (HH/HL/LH/LL) — trend utama
+    2. HTF trend (1H) — big picture
+    3. Candle body momentum — siapa yang menang (bull vs bear POWER)
+    4. Recent net move — harga gerak ke mana
+    5. MACD — momentum konfirmasi
+    6. Price vs EMA — positioning
+    7. ADX/RSI/Stoch — fine tuning
     """
     score = 0  # Positif = bullish, negatif = bearish
+    reasons = []
 
     price = indicators['price']
     ema_9 = indicators['ema_9']
@@ -41,96 +51,171 @@ def _read_market_trend(indicators: dict) -> dict:
     plus_di = indicators['plus_di']
     minus_di = indicators['minus_di']
     stoch_k = indicators['stoch_k']
-    momentum = indicators.get('momentum_dir', 'flat')
     momentum_net = indicators.get('momentum_net', 0)
     bullish_candles = indicators.get('bullish_candles', 0)
     bearish_candles = indicators.get('bearish_candles', 0)
+    body_ratio = indicators.get('body_ratio', 0)
     vwap = indicators.get('vwap', 0)
-
-    # === 1. RECENT CANDLES — PALING PENTING untuk scalping (bobot 6) ===
-    # 5 candle terakhir: kalau 4-5 bearish → market lagi turun SEKARANG
-    if bearish_candles >= 4:
-        score -= 6
-        logger.info(f"   🔻 {bearish_candles}/5 candle terakhir BEARISH → turun kuat")
-    elif bearish_candles >= 3:
-        score -= 4
-        logger.info(f"   🔻 {bearish_candles}/5 candle terakhir bearish")
-    elif bullish_candles >= 4:
-        score += 6
-        logger.info(f"   🔺 {bullish_candles}/5 candle terakhir BULLISH → naik kuat")
-    elif bullish_candles >= 3:
-        score += 4
-        logger.info(f"   🔺 {bullish_candles}/5 candle terakhir bullish")
-
-    # === 2. NET MOVE — arah harga terkini (bobot 4) ===
     atr = indicators.get('atr', 10)
-    if momentum_net < -(atr * 0.3):
+
+    # Price structure
+    structure = indicators.get('price_structure', 'unknown')
+    
+    # ============================================================
+    # 1. PRICE STRUCTURE — PALING PENTING (bobot 7)
+    # Trader pertama kali lihat: market bikin HH/HL atau LH/LL?
+    # ============================================================
+    if structure == 'downtrend':
+        score -= 7
+        reasons.append(f"🔻 STRUCTURE: Downtrend (LH+LL)")
+    elif structure == 'uptrend':
+        score += 7
+        reasons.append(f"🔺 STRUCTURE: Uptrend (HH+HL)")
+    elif structure == 'distribution':
         score -= 4
-    elif momentum_net < 0:
-        score -= 2
-    elif momentum_net > (atr * 0.3):
+        reasons.append(f"🔻 STRUCTURE: Distribution (topping)")
+    elif structure == 'accumulation':
         score += 4
-    elif momentum_net > 0:
+        reasons.append(f"🔺 STRUCTURE: Accumulation (bottoming)")
+    elif structure == 'ranging':
+        reasons.append(f"↔️ STRUCTURE: Ranging")
+    
+    # ============================================================
+    # 2. HIGHER TIMEFRAME TREND (bobot 6) — Big Picture
+    # Kalau 1H bearish tapi 15m bullish = JANGAN BUY
+    # ============================================================
+    if htf_data and htf_data.get('htf_trend', 'unknown') != 'unknown':
+        htf_trend = htf_data['htf_trend']
+        htf_score_val = htf_data.get('htf_score', 0)
+        if htf_trend == 'BULLISH':
+            score += 6
+            reasons.append(f"🔺 HTF 1H: BULLISH (score={htf_score_val})")
+        elif htf_trend == 'LEAN_BULLISH':
+            score += 3
+            reasons.append(f"🔺 HTF 1H: Lean bullish")
+        elif htf_trend == 'BEARISH':
+            score -= 6
+            reasons.append(f"🔻 HTF 1H: BEARISH (score={htf_score_val})")
+        elif htf_trend == 'LEAN_BEARISH':
+            score -= 3
+            reasons.append(f"🔻 HTF 1H: Lean bearish")
+    
+    # ============================================================
+    # 3. CANDLE BODY MOMENTUM (bobot 5) — Siapa yang menang?
+    # Bukan cuma hitung 3 green 2 red. Tapi TOTAL BODY SIZE.
+    # 1 red besar > 3 green kecil = BEARISH
+    # ============================================================
+    if body_ratio < -0.5:
+        score -= 5
+        reasons.append(f"🔻 BODY: Bear dominasi kuat ({body_ratio:.2f})")
+    elif body_ratio < -0.2:
+        score -= 3
+        reasons.append(f"🔻 BODY: Bear lebih kuat ({body_ratio:.2f})")
+    elif body_ratio > 0.5:
+        score += 5
+        reasons.append(f"🔺 BODY: Bull dominasi kuat ({body_ratio:.2f})")
+    elif body_ratio > 0.2:
+        score += 3
+        reasons.append(f"🔺 BODY: Bull lebih kuat ({body_ratio:.2f})")
+    
+    # ============================================================
+    # 4. NET MOVE — arah harga aktual (bobot 4)
+    # ============================================================
+    if momentum_net < -(atr * 0.5):
+        score -= 4
+        reasons.append(f"🔻 NET: Turun signifikan ({momentum_net:.2f})")
+    elif momentum_net < -(atr * 0.2):
+        score -= 2
+    elif momentum_net > (atr * 0.5):
+        score += 4
+        reasons.append(f"🔺 NET: Naik signifikan ({momentum_net:.2f})")
+    elif momentum_net > (atr * 0.2):
         score += 2
 
-    # === 3. MACD (bobot 3) — trend menengah ===
+    # ============================================================
+    # 5. MACD (bobot 3) — momentum konfirmasi
+    # ============================================================
     if macd_hist > 0 and macd_line > macd_signal:
         score += 3
+        reasons.append(f"🔺 MACD: Bullish (hist={macd_hist:.3f})")
     elif macd_hist < 0 and macd_line < macd_signal:
         score -= 3
+        reasons.append(f"🔻 MACD: Bearish (hist={macd_hist:.3f})")
     elif macd_hist > 0:
         score += 1
     elif macd_hist < 0:
         score -= 1
 
-    # === 4. PRICE vs EMA9 — paling sensitif (bobot 2) ===
-    if price > ema_9:
-        score += 2
+    # ============================================================
+    # 6. PRICE vs EMA CLUSTER (bobot 3) — positioning
+    # ============================================================
+    below_all = price < ema_9 and price < ema_21
+    above_all = price > ema_9 and price > ema_21
+    if above_all and ema_9 > ema_21:
+        score += 3
+        reasons.append(f"🔺 EMA: Price > EMA9 > EMA21")
+    elif below_all and ema_9 < ema_21:
+        score -= 3
+        reasons.append(f"🔻 EMA: Price < EMA9 < EMA21")
+    elif price > ema_9:
+        score += 1
     elif price < ema_9:
-        score -= 2
+        score -= 1
 
-    # === 5. ADX + DI (bobot 2) ===
-    if adx > 20:
+    # ============================================================
+    # 7. ADX + DI (bobot 2) — trend strength
+    # ============================================================
+    if adx > 25:
         if plus_di > minus_di:
             score += 2
         else:
             score -= 2
 
-    # === 6. VWAP (bobot 1) ===
+    # ============================================================
+    # 8. VWAP (bobot 1) — institutional level
+    # ============================================================
     if vwap > 0:
         if price > vwap:
             score += 1
         else:
             score -= 1
 
-    # === 7. RSI (bobot 1, hanya kalau sejalan) ===
-    if rsi > 60 and score > 0:
+    # ============================================================
+    # 9. RSI extreme (bobot 1, hanya kalau sejalan)
+    # ============================================================
+    if rsi > 65 and score > 0:
         score += 1
-    elif rsi < 40 and score < 0:
+    elif rsi < 35 and score < 0:
         score -= 1
 
-    max_score = 22
+    # --- TOTAL ---
+    max_score = 35  # Updated max: 7+6+5+4+3+3+2+1+1 = 32, round up
     strength = abs(score) / max_score * 100
 
-    if score >= 8:
+    if score >= 12:
         direction = 'STRONG_BULLISH'
-    elif score >= 3:
+    elif score >= 5:
         direction = 'BULLISH'
-    elif score <= -8:
+    elif score <= -12:
         direction = 'STRONG_BEARISH'
-    elif score <= -3:
+    elif score <= -5:
         direction = 'BEARISH'
     else:
         direction = 'MIXED'
 
-    logger.info(f"📊 Market Read: score={score}, direction={direction}, strength={strength:.0f}%")
-    logger.info(f"   Recent: bull={bullish_candles} bear={bearish_candles} net={momentum_net} | "
-                f"MACD hist={macd_hist} | Price vs EMA9={'above' if price > ema_9 else 'below'}")
+    # Log all reasons
+    logger.info(f"📊 === MARKET READ ===")
+    logger.info(f"📊 Final: score={score}/{max_score}, direction={direction}, strength={strength:.0f}%")
+    for r in reasons:
+        logger.info(f"   {r}")
+    logger.info(f"   Extra: RSI={rsi:.0f} | Stoch={stoch_k:.0f} | ADX={adx:.0f} | "
+                f"Bull={bullish_candles} Bear={bearish_candles} | Net={momentum_net:.2f}")
 
     return {
         'direction': direction,
         'score': score,
         'strength': round(strength, 1),
+        'reasons': reasons,
     }
 
 
@@ -172,56 +257,35 @@ def _calculate_smart_levels(indicators: dict, signal_type: str) -> dict:
 
 def _ask_ai_trader(indicators: dict, market_trend: dict, api_key: str) -> dict:
     """
-    Gemini AI menganalisis market. Hasilnya HARUS sejalan dengan trend.
+    Gemini AI sebagai second opinion. Prompt simple dan fokus.
     """
     trend_dir = market_trend['direction']
     trend_score = market_trend['score']
+    reasons_text = '\n'.join(market_trend.get('reasons', []))
 
-    prompt = f"""Kamu adalah analis XAUUSD profesional. BACA MARKET DULU sebelum kirim signal.
+    prompt = f"""Kamu analis XAUUSD. Analisis teknikal sudah dilakukan dengan hasil:
 
-=== TREND SAAT INI (WAJIB DIIKUTI) ===
-Trend Score: {trend_score} (positif=bullish, negatif=bearish)
-Trend Direction: {trend_dir}
+TREND: {trend_dir} (score: {trend_score})
+ALASAN:
+{reasons_text}
 
-=== HARGA ===
-Price: {indicators['price']:.2f} | High: {indicators['high']:.2f} | Low: {indicators['low']:.2f}
-
-=== EMA (PALING PENTING) ===
-EMA 9: {indicators['ema_9']:.2f} | EMA 21: {indicators['ema_21']:.2f} | EMA 50: {indicators['ema_50']:.2f} | EMA 200: {indicators['ema_200']:.2f}
-EMA Trend: {indicators.get('ema_trend', 'N/A')}
-Price vs EMA9: {"DI ATAS" if indicators['price'] > indicators['ema_9'] else "DI BAWAH"}
-Price vs EMA21: {"DI ATAS" if indicators['price'] > indicators['ema_21'] else "DI BAWAH"}
-
-=== MACD ===
-MACD: {indicators['macd']:.3f} | Signal: {indicators['macd_signal']:.3f} | Hist: {indicators['macd_histogram']:.3f}
-MACD Status: {"BULLISH (histogram positif)" if indicators['macd_histogram'] > 0 else "BEARISH (histogram negatif)"}
-
-=== MOMENTUM ===
-ADX: {indicators['adx']:.1f} | +DI: {indicators['plus_di']:.1f} | -DI: {indicators['minus_di']:.1f}
-RSI: {indicators['rsi']:.1f} | Stoch K: {indicators['stoch_k']:.1f} | D: {indicators['stoch_d']:.1f}
-Momentum candle: {indicators.get('momentum_dir', 'N/A')}
-
-=== VOLATILITY & LEVELS ===
-ATR: {indicators['atr']:.2f}
-BB: Upper={indicators['bb_upper']:.2f} Mid={indicators['bb_middle']:.2f} Lower={indicators['bb_lower']:.2f}
-Support: {indicators.get('nearest_support', 'N/A')} | Resistance: {indicators.get('nearest_resistance', 'N/A')}
-VWAP: {indicators.get('vwap', 0):.2f}
-
-=== PATTERNS ===
+DATA MARKET:
+Price: {indicators['price']:.2f}
+EMA: 9={indicators['ema_9']:.2f} 21={indicators['ema_21']:.2f} 50={indicators['ema_50']:.2f}
+MACD Hist: {indicators['macd_histogram']:.3f}
+RSI: {indicators['rsi']:.1f} | ADX: {indicators['adx']:.1f} | +DI: {indicators['plus_di']:.1f} -DI: {indicators['minus_di']:.1f}
+Structure: {indicators.get('price_structure', 'unknown')}
+Body Ratio: {indicators.get('body_ratio', 0):.2f} (negatif=bear dominan, positif=bull dominan)
 Candle: {indicators.get('candle_pattern', 'none')} ({indicators.get('candle_bias', 'neutral')})
-RSI Divergence: {indicators.get('rsi_divergence', 'none')}
 
-=== ATURAN KETAT (WAJIB) ===
-1. BACA TREND DULU! Kalau price < EMA9 < EMA21, MACD negatif → DOWNTREND → HARUS SELL
-2. Kalau price > EMA9 > EMA21, MACD positif → UPTREND → HARUS BUY
-3. DILARANG BUY di downtrend meskipun RSI oversold — itu selling pressure kuat
-4. DILARANG SELL di uptrend meskipun RSI overbought — itu buying pressure kuat
-5. Signal HARUS sejalan dengan trend direction: {trend_dir}
-6. Reversal HANYA boleh kalau ada: divergence + candle reversal + momentum sudah balik
-7. Confidence 30-90 realistis. Prob Up + Prob Down = 100
+ATURAN:
+1. Signal HARUS sejalan trend: {trend_dir}
+2. Kalau BEARISH → SELL. Kalau BULLISH → BUY
+3. DILARANG melawan trend kecuali ada divergence + candle reversal
+4. Confidence realistis 30-85
 
-Output HANYA JSON (tanpa markdown/backtick):
-{{"signal":"BUY atau SELL","confidence":30-90,"prob_up":10-90,"prob_down":10-90,"reasoning":"2-3 kalimat alasan Bahasa Indonesia"}}"""
+Output JSON saja (tanpa backtick/markdown):
+{{"signal":"BUY/SELL","confidence":30-85,"prob_up":10-90,"prob_down":10-90,"reasoning":"Alasan singkat"}}"""
 
     models_to_try = [
         'gemini-2.5-flash',              # Paling pintar & reliable
@@ -371,18 +435,18 @@ def _fallback_analysis(indicators: dict, market_trend: dict) -> dict:
 # MAIN: Generate Signal (baca market → AI → validasi → levels)
 # ============================================================
 
-def generate_signal_with_gemini(indicators: dict, api_key: str = None) -> dict:
+def generate_signal_with_gemini(indicators: dict, api_key: str = None, htf_data: dict = None) -> dict:
     """
-    Generate signal XAUUSD — BACA MARKET DULU baru kirim signal.
+    Generate signal XAUUSD — BACA CHART SEPERTI TRADER PRO.
 
     Flow:
-    1. _read_market_trend() → tentukan trend objektif
-    2. _ask_ai_trader() → Gemini analisis sebagai konfirmasi
-    3. _validate_signal() → tolak kalau AI melawan trend
+    1. _read_market_trend() → full chart analysis (structure + HTF + momentum)
+    2. _ask_ai_trader() → Gemini sebagai second opinion
+    3. _validate_signal() → tolak kalau melawan trend
     4. _calculate_smart_levels() → SL/TP ketat
     """
-    # STEP 1: Baca market
-    market_trend = _read_market_trend(indicators)
+    # STEP 1: Baca chart seperti trader
+    market_trend = _read_market_trend(indicators, htf_data=htf_data)
     logger.info(f"📊 Trend: {market_trend['direction']} (score={market_trend['score']}, "
                 f"strength={market_trend['strength']}%)")
 

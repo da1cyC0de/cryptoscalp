@@ -23,8 +23,8 @@ from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
-from price_fetcher import fetch_xauusd_data, get_spread_estimate
-from indicators import calculate_all_indicators
+from price_fetcher import fetch_xauusd_data, fetch_higher_timeframe, get_spread_estimate
+from indicators import calculate_all_indicators, calculate_htf_trend
 from signal_generator import generate_signal_with_gemini
 from telegram_sender import send_telegram_message, format_signal_message
 
@@ -95,11 +95,19 @@ def run_signal():
     logger.info(f"   EMA Trend: {indicators.get('ema_trend')} | "
                 f"Candle: {indicators.get('candle_pattern')} ({indicators.get('candle_bias')}) | "
                 f"Momentum: {indicators.get('momentum_dir')}")
-    logger.info(f"   S/R: Support={indicators.get('nearest_support')} | "
-                f"Resistance={indicators.get('nearest_resistance')}")
+    logger.info(f"   Structure: {indicators.get('price_structure')} | "
+                f"Body Ratio: {indicators.get('body_ratio', 0):.2f} | "
+                f"S/R: Support={indicators.get('nearest_support')} Res={indicators.get('nearest_resistance')}")
+
+    # Multi-timeframe: ambil data 1H untuk big picture
+    logger.info("📊 Mengambil data HTF (1H) untuk multi-timeframe...")
+    df_htf = fetch_higher_timeframe(timeframe_htf='1h', lookback_days=14)
+    htf_data = calculate_htf_trend(df_htf) if not df_htf.empty else None
+    if htf_data:
+        logger.info(f"   HTF 1H Trend: {htf_data['htf_trend']} (score={htf_data['htf_score']})")
 
     logger.info("🤖 Menganalisis dengan Gemini AI...")
-    signal_result = generate_signal_with_gemini(indicators)
+    signal_result = generate_signal_with_gemini(indicators, htf_data=htf_data)
     if not signal_result:
         logger.error("❌ Gagal generate signal. Skip.")
         return
