@@ -49,8 +49,7 @@ def format_signal_message(signal_data: dict) -> str:
     rsi = signal_data.get('rsi', 0)
     bb_width = signal_data.get('bb_width', 0)
     timestamp = signal_data.get('timestamp', '')
-    bot_name = signal_data.get('bot_name', 'Scalp Signal')
-    symbol = signal_data.get('symbol', 'XAUUSD')
+    bot_name = signal_data.get('bot_name', 'XAUUSD Scalp Signal')
 
     # Emoji berdasarkan signal
     if signal_type == 'BUY':
@@ -68,7 +67,7 @@ def format_signal_message(signal_data: dict) -> str:
     filled = int(strength / 10)
     bar = "█" * filled + "░" * (10 - filled)
 
-    message = f"""<b>{symbol} - {bot_name}</b>
+    message = f"""<b>XAUUSD - {bot_name}</b>
 <code>========================</code>
 
 {signal_icon} <b>Signal: {signal_type}</b>
