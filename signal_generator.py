@@ -33,38 +33,38 @@ def _calculate_smart_levels(indicators: dict, signal_type: str, symbol: str = 'X
     nearest_resistance = indicators.get('nearest_resistance', price + sr_fallback)
 
     if signal_type == 'BUY':
-        sl_by_sr = nearest_support - (atr * 0.2)
-        sl_by_atr = price - (atr * 1.0)
+        sl_by_sr = nearest_support - (atr * 0.1)
+        sl_by_atr = price - (atr * 0.5)
         stop_loss = max(sl_by_sr, sl_by_atr)
 
         risk = price - stop_loss
-        if risk < atr * 0.4:
-            risk = atr * 0.6
+        if risk < atr * 0.2:
+            risk = atr * 0.3
             stop_loss = price - risk
-        if risk > atr * 1.2:
-            risk = atr * 1.0
+        if risk > atr * 0.6:
+            risk = atr * 0.5
             stop_loss = price - risk
 
-        tp1 = round(price + (risk * 0.8), 2)
-        tp2 = round(price + (risk * 1.2), 2)
-        tp3 = round(price + (risk * 1.8), 2)
+        tp1 = round(price + (risk * 0.5), 2)
+        tp2 = round(price + (risk * 0.8), 2)
+        tp3 = round(price + (risk * 1.2), 2)
 
     else:  # SELL
-        sl_by_sr = nearest_resistance + (atr * 0.2)
-        sl_by_atr = price + (atr * 1.0)
+        sl_by_sr = nearest_resistance + (atr * 0.1)
+        sl_by_atr = price + (atr * 0.5)
         stop_loss = min(sl_by_sr, sl_by_atr)
 
         risk = stop_loss - price
-        if risk < atr * 0.4:
-            risk = atr * 0.6
+        if risk < atr * 0.2:
+            risk = atr * 0.3
             stop_loss = price + risk
-        if risk > atr * 1.2:
-            risk = atr * 1.0
+        if risk > atr * 0.6:
+            risk = atr * 0.5
             stop_loss = price + risk
 
-        tp1 = round(price - (risk * 0.8), 2)
-        tp2 = round(price - (risk * 1.2), 2)
-        tp3 = round(price - (risk * 1.8), 2)
+        tp1 = round(price - (risk * 0.5), 2)
+        tp2 = round(price - (risk * 0.8), 2)
+        tp3 = round(price - (risk * 1.2), 2)
 
     return {
         'stop_loss': round(stop_loss, 2),
