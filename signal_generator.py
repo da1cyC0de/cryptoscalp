@@ -130,50 +130,24 @@ def _read_market_trend(indicators: dict) -> dict:
 
 
 # ============================================================
-# STEP 2: SL/TP KETAT — based on S/R + small ATR buffer
+# STEP 2: SL/TP FIXED 30 PIP — main kecil bersyukur
 # ============================================================
 
 def _calculate_smart_levels(indicators: dict, signal_type: str) -> dict:
     """
-    SL/TP ketat berdasarkan S/R levels.
-    SL: behind nearest S/R + small buffer
-    TP: realistic scalp targets with good R:R
+    SL/TP fixed ~30 pip ($3.00) untuk XAUUSD.
+    1 pip XAUUSD = $0.10, jadi 30 pip = $3.00
     """
     price = indicators['price']
-    atr = indicators['atr']
-    nearest_support = indicators.get('nearest_support', price - 10)
-    nearest_resistance = indicators.get('nearest_resistance', price + 10)
+    risk = 3.00  # 30 pip = $3.00
 
     if signal_type == 'BUY':
-        sl_by_sr = nearest_support - (atr * 0.1)
-        sl_by_atr = price - (atr * 0.4)
-        stop_loss = max(sl_by_sr, sl_by_atr)
-
-        risk = price - stop_loss
-        if risk < atr * 0.2:
-            risk = atr * 0.2
-            stop_loss = price - risk
-        if risk > atr * 0.5:
-            risk = atr * 0.4
-            stop_loss = price - risk
-
-        tp1 = round(price + (risk * 0.8), 2)   # Quick scalp
-        tp2 = round(price + (risk * 1.2), 2)   # Target utama
-        tp3 = round(price + (risk * 1.8), 2)   # Bonus
-
+        stop_loss = round(price - risk, 2)
+        tp1 = round(price + (risk * 0.8), 2)   # 24 pip
+        tp2 = round(price + (risk * 1.2), 2)   # 36 pip
+        tp3 = round(price + (risk * 1.8), 2)   # 54 pip
     else:  # SELL
-        sl_by_sr = nearest_resistance + (atr * 0.1)
-        sl_by_atr = price + (atr * 0.4)
-        stop_loss = min(sl_by_sr, sl_by_atr)
-
-        risk = stop_loss - price
-        if risk < atr * 0.2:
-            risk = atr * 0.2
-            stop_loss = price + risk
-        if risk > atr * 0.5:
-            risk = atr * 0.4
-            stop_loss = price + risk
-
+        stop_loss = round(price + risk, 2)
         tp1 = round(price - (risk * 0.8), 2)
         tp2 = round(price - (risk * 1.2), 2)
         tp3 = round(price - (risk * 1.8), 2)
