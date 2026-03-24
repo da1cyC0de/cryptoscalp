@@ -219,10 +219,9 @@ Output HANYA JSON (tanpa markdown/backtick):
 {{"signal":"BUY atau SELL","confidence":30-90,"prob_up":10-90,"prob_down":10-90,"reasoning":"2-3 kalimat alasan Bahasa Indonesia"}}"""
 
     models_to_try = [
-        'gemini-2.5-flash',              # Paling pintar, paid tier
-        'gemini-2.5-pro',                # Pro model (kalau available)
-        'gemini-3-flash-preview',        # Newest
-        'gemini-2.5-flash-lite',         # Fallback terakhir
+        'gemini-2.5-flash',              # Paling pintar & reliable
+        'gemini-3-flash-preview',        # Newest flash
+        'gemini-2.5-flash-lite',         # Fallback
     ]
 
     client = genai.Client(api_key=api_key)
@@ -245,7 +244,31 @@ Output HANYA JSON (tanpa markdown/backtick):
             if text.startswith('json'):
                 text = text[4:].strip()
 
-            result = json.loads(text)
+            # Fix newlines inside JSON string (Gemini suka multiline)
+            text = text.replace('\n', ' ').replace('\r', ' ')
+
+            # Try parse JSON, kalau gagal coba repair
+            try:
+                result = json.loads(text)
+            except json.JSONDecodeError:
+                # Coba extract manual dari partial JSON
+                import re
+                sig_m = re.search(r'"signal"\s*:\s*"(BUY|SELL)"', text, re.IGNORECASE)
+                conf_m = re.search(r'"confidence"\s*:\s*(\d+)', text)
+                pu_m = re.search(r'"prob_up"\s*:\s*(\d+)', text)
+                pd_m = re.search(r'"prob_down"\s*:\s*(\d+)', text)
+                if sig_m:
+                    result = {
+                        'signal': sig_m.group(1).upper(),
+                        'confidence': int(conf_m.group(1)) if conf_m else 50,
+                        'prob_up': int(pu_m.group(1)) if pu_m else 50,
+                        'prob_down': int(pd_m.group(1)) if pd_m else 50,
+                        'reasoning': 'Parsed from partial response',
+                    }
+                    logger.info(f"🔧 Gemini {model_name}: repaired partial JSON")
+                else:
+                    logger.warning(f"⚠️ Gemini {model_name} JSON unfixable: {text[:150]}")
+                    continue
 
             signal = result.get('signal', '').upper()
             if signal not in ('BUY', 'SELL'):
