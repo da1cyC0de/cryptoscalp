@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 
 def _read_market_trend(indicators: dict) -> dict:
     """
-    Baca kondisi market secara objektif.
-    Returns: direction, score, strength
+    Baca kondisi market untuk SCALPING.
+    Prioritas: recent candle direction > MACD > EMA.
+    Kalau 5 candle terakhir turun semua, itu BEARISH meskipun EMA masih bullish.
     """
     score = 0  # Positif = bullish, negatif = bearish
 
@@ -40,31 +41,39 @@ def _read_market_trend(indicators: dict) -> dict:
     plus_di = indicators['plus_di']
     minus_di = indicators['minus_di']
     stoch_k = indicators['stoch_k']
-    ema_trend = indicators.get('ema_trend', 'mixed')
     momentum = indicators.get('momentum_dir', 'flat')
+    momentum_net = indicators.get('momentum_net', 0)
+    bullish_candles = indicators.get('bullish_candles', 0)
+    bearish_candles = indicators.get('bearish_candles', 0)
     vwap = indicators.get('vwap', 0)
 
-    # === 1. EMA ALIGNMENT (bobot 5 — paling penting) ===
-    if ema_trend == 'strong_bullish':
-        score += 5
-    elif ema_trend == 'bullish':
-        score += 3
-    elif ema_trend == 'strong_bearish':
-        score -= 5
-    elif ema_trend == 'bearish':
-        score -= 3
+    # === 1. RECENT CANDLES — PALING PENTING untuk scalping (bobot 6) ===
+    # 5 candle terakhir: kalau 4-5 bearish → market lagi turun SEKARANG
+    if bearish_candles >= 4:
+        score -= 6
+        logger.info(f"   🔻 {bearish_candles}/5 candle terakhir BEARISH → turun kuat")
+    elif bearish_candles >= 3:
+        score -= 4
+        logger.info(f"   🔻 {bearish_candles}/5 candle terakhir bearish")
+    elif bullish_candles >= 4:
+        score += 6
+        logger.info(f"   🔺 {bullish_candles}/5 candle terakhir BULLISH → naik kuat")
+    elif bullish_candles >= 3:
+        score += 4
+        logger.info(f"   🔺 {bullish_candles}/5 candle terakhir bullish")
 
-    # === 2. PRICE vs EMAs (bobot 3) ===
-    if price > ema_9 > ema_21:
-        score += 3
-    elif price < ema_9 < ema_21:
-        score -= 3
-    elif price > ema_9:
-        score += 1
-    elif price < ema_9:
-        score -= 1
+    # === 2. NET MOVE — arah harga terkini (bobot 4) ===
+    atr = indicators.get('atr', 10)
+    if momentum_net < -(atr * 0.3):
+        score -= 4
+    elif momentum_net < 0:
+        score -= 2
+    elif momentum_net > (atr * 0.3):
+        score += 4
+    elif momentum_net > 0:
+        score += 2
 
-    # === 3. MACD (bobot 3) ===
+    # === 3. MACD (bobot 3) — trend menengah ===
     if macd_hist > 0 and macd_line > macd_signal:
         score += 3
     elif macd_hist < 0 and macd_line < macd_signal:
@@ -74,18 +83,18 @@ def _read_market_trend(indicators: dict) -> dict:
     elif macd_hist < 0:
         score -= 1
 
-    # === 4. ADX + DI (bobot 2) ===
+    # === 4. PRICE vs EMA9 — paling sensitif (bobot 2) ===
+    if price > ema_9:
+        score += 2
+    elif price < ema_9:
+        score -= 2
+
+    # === 5. ADX + DI (bobot 2) ===
     if adx > 20:
         if plus_di > minus_di:
             score += 2
         else:
             score -= 2
-
-    # === 5. MOMENTUM (bobot 2) ===
-    if momentum == 'bullish':
-        score += 2
-    elif momentum == 'bearish':
-        score -= 2
 
     # === 6. VWAP (bobot 1) ===
     if vwap > 0:
@@ -94,33 +103,29 @@ def _read_market_trend(indicators: dict) -> dict:
         else:
             score -= 1
 
-    # === 7. RSI context (bobot 1, HANYA sejalan trend) ===
+    # === 7. RSI (bobot 1, hanya kalau sejalan) ===
     if rsi > 60 and score > 0:
         score += 1
     elif rsi < 40 and score < 0:
         score -= 1
 
-    # === 8. Stochastic (bobot 1, HANYA sejalan trend) ===
-    if stoch_k > 60 and score > 0:
-        score += 1
-    elif stoch_k < 40 and score < 0:
-        score -= 1
-
-    max_score = 19
+    max_score = 22
     strength = abs(score) / max_score * 100
 
     if score >= 8:
         direction = 'STRONG_BULLISH'
-    elif score >= 4:
+    elif score >= 3:
         direction = 'BULLISH'
     elif score <= -8:
         direction = 'STRONG_BEARISH'
-    elif score <= -4:
+    elif score <= -3:
         direction = 'BEARISH'
     else:
         direction = 'MIXED'
 
     logger.info(f"📊 Market Read: score={score}, direction={direction}, strength={strength:.0f}%")
+    logger.info(f"   Recent: bull={bullish_candles} bear={bearish_candles} net={momentum_net} | "
+                f"MACD hist={macd_hist} | Price vs EMA9={'above' if price > ema_9 else 'below'}")
 
     return {
         'direction': direction,
