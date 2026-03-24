@@ -141,8 +141,21 @@ def fetch_xauusd_data(timeframe: str = "15m", lookback_days: int = 7) -> pd.Data
                 df['Low'] = df['Low'] - diff
                 df['Close'] = df['Close'] - diff
 
+        # PENTING: Override harga candle terakhir pakai spot LIVE
+        # Supaya entry price di signal = harga yang user lihat di chart
+        spot_final = _get_spot_price_tradingview()
+        if spot_final <= 0:
+            spot_final = spot  # Pakai yang tadi kalau gagal
+        if spot_final > 0:
+            df.iloc[-1, df.columns.get_loc('Close')] = spot_final
+            # Adjust High/Low kalau spot di luar range
+            if spot_final > df.iloc[-1]['High']:
+                df.iloc[-1, df.columns.get_loc('High')] = spot_final
+            if spot_final < df.iloc[-1]['Low']:
+                df.iloc[-1, df.columns.get_loc('Low')] = spot_final
+
         final_price = float(df['Close'].iloc[-1])
-        logger.info(f"✅ Data siap: {len(df)} candle, harga final: {final_price:.2f}")
+        logger.info(f"✅ Data siap: {len(df)} candle, harga final (LIVE): {final_price:.2f}")
         return df
 
     except Exception as e:
