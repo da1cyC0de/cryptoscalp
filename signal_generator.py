@@ -233,7 +233,7 @@ Output HANYA JSON (tanpa markdown/backtick):
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.2,
-                    max_output_tokens=300,
+                    max_output_tokens=1024,
                 ),
             )
             text = response.text.strip()
